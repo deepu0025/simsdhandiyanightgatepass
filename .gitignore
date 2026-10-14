@@ -1,0 +1,14 @@
+.env
+.pytest_cache/
+.venv/
+__pycache__/
+*.py[cod]
+*.sqlite3
+backend/private_media/
+backend/staticfiles/
+backend/secrets/
+*.service-account.json
+service-account*.json
+client/node_modules/
+client/dist/
+client/.vite/

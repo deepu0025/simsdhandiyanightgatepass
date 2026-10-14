@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #101a26;
+  --color-canvas: #f4f6f7;
+  --color-accent: #276c61;
+  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #101a26;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input, select { font: inherit; }
+
+.field {
+  width: 100%;
+  border: 1px solid #dbe1e5;
+  border-radius: 0.75rem;
+  background: white;
+  padding: 0.75rem 0.875rem;
+  color: #101a26;
+  outline: none;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.field:focus { border-color: #276c61; box-shadow: 0 0 0 3px rgb(39 108 97 / 12%); }
+.nav-item { display: flex; align-items: center; gap: 0.75rem; border-radius: 0.75rem; padding: 0.75rem 1rem; color: #cbd5e1; font-size: 0.875rem; transition: background 150ms ease; }
+.nav-item:hover, .nav-active { background: rgb(255 255 255 / 9%); color: white; }
+.status-pill { display: inline-flex; border-radius: 9999px; background: #f1f5f9; padding: 0.25rem 0.6rem; font-size: 0.7rem; font-weight: 600; color: #334155; }
+.scanner-icon { display: grid; height: 2.75rem; width: 2.75rem; place-items: center; border-radius: 0.85rem; background: rgb(255 255 255 / 10%); color: white; }
+.scanner-icon:hover { background: rgb(255 255 255 / 18%); }
+#ticket-reader { width: 100%; min-width: 0; }
+#ticket-reader video { width: 100% !important; max-width: 100% !important; height: auto !important; border-radius: 1rem; object-fit: cover; }
+#ticket-reader__scan_region { border: 0 !important; }
+#ticket-reader__dashboard_section_csr button { cursor: pointer; }
