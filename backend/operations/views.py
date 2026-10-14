@@ -389,7 +389,7 @@ class ScanValidationView(APIView):
 
     def post(self, request):
         credential = request.data.get("credential")
-        if not isinstance(credential, str):
+        if not isinstance(credential, str) or not 1 <= len(credential.strip()) <= 256:
             return Response({"detail": "A valid scan credential is required."}, status=400)
         validation_result, ticket = validate_ticket_credential(credential)
         payload = {

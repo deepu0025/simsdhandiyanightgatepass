@@ -187,6 +187,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ credential }),
     }, [409]),
+  validateScan: (credential: string) =>
+    request<{
+      result: string;
+      ticket_id?: string | null;
+      ticket_number?: string | null;
+      attendee_name?: string | null;
+      ticket_type?: string | null;
+      checked_in_at?: string | null;
+    }>('/scanner/validate/', {
+      method: 'POST',
+      body: JSON.stringify({ credential }),
+    }),
+  checkInScan: (credential: string) =>
+    request<{
+      result: string;
+      ticket_number?: string;
+      attendee_name?: string;
+      ticket_type?: string;
+      checked_in_at?: string | null;
+    }>('/scanner/check-in/', {
+      method: 'POST',
+      body: JSON.stringify({ credential }),
+    }, [409]),
   scanHistory: () => request<Array<Record<string, string>>>('/scanner/history/'),
   sendTicketEmail: (ticketId: string) =>
     request<{ email_status: string }>(`/admin/tickets/${ticketId}/email/`, { method: 'POST' }),

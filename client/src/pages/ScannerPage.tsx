@@ -4,7 +4,7 @@ import { Camera, CameraOff, CheckCircle2, LogOut, RotateCcw, Volume2, VolumeX, X
 import type { User } from '../api';
 import { api } from '../api';
 
-type ScanResult = { result: string; attendee_name?: string; ticket_number?: string; ticket_type?: string; checked_in_at?: string | null };
+type ScanResult = { result: string; attendee_name?: string | null; ticket_number?: string | null; ticket_type?: string | null; checked_in_at?: string | null };
 
 export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut: () => void }) {
   const scannerRef = useRef<Html5Qrcode | null>(null);
@@ -15,6 +15,8 @@ export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut
   const [camera, setCamera] = useState('');
   const [muted, setMuted] = useState(false);
   const [result, setResult] = useState<ScanResult | null>(null);
+  const [pendingCredential, setPendingCredential] = useState('');
+  const [checkingIn, setCheckingIn] = useState(false);
   const [history, setHistory] = useState<Array<Record<string, string>>>([]);
   const [error, setError] = useState('');
 
@@ -44,34 +46,19 @@ export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut
     lastSubmittedCredentialRef.current = normalized;
     setError('');
     try {
-      const data = await api.scan(normalized);
+      const data = await api.validateScan(normalized);
       setResult(data);
-      if (!muted && data.result === 'ACCEPTED') {
-        const AudioContextClass = window.AudioContext;
-        if (AudioContextClass) {
-          const context = new AudioContextClass();
-          const oscillator = context.createOscillator();
-          const gain = context.createGain();
-          oscillator.connect(gain);
-          gain.connect(context.destination);
-          oscillator.frequency.value = 740;
-          gain.gain.value = 0.08;
-          oscillator.start();
-          oscillator.stop(context.currentTime + 0.12);
-          void context.close();
-        }
-      }
-      api.scanHistory().then(setHistory).catch(() => {
-        setError('Scan was confirmed, but recent history could not be refreshed.');
-      });
+      setPendingCredential(data.result === 'VALID' ? normalized : '');
+      if (scannerRef.current?.isScanning) await scannerRef.current.stop();
+      setRunning(false);
     } catch (reason) {
       lastSubmittedCredentialRef.current = '';
       setResult({ result: 'SERVER_UNAVAILABLE' });
       setError(reason instanceof Error ? reason.message : 'Scan not confirmed by server.');
     } finally {
-      window.setTimeout(() => { busyRef.current = false; }, 1600);
+      busyRef.current = false;
     }
-  }, [muted]);
+  }, []);
 
   async function start() {
     if (!camera) {
@@ -95,10 +82,54 @@ export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut
     setRunning(false);
   }
 
+  async function confirmCheckIn() {
+    if (!pendingCredential || checkingIn) return;
+    setCheckingIn(true);
+    setError('');
+    try {
+      const data = await api.checkInScan(pendingCredential);
+      setResult(data);
+      setPendingCredential('');
+      if (!muted && data.result === 'ACCEPTED') {
+        const AudioContextClass = window.AudioContext;
+        if (AudioContextClass) {
+          const context = new AudioContextClass();
+          const oscillator = context.createOscillator();
+          const gain = context.createGain();
+          oscillator.connect(gain);
+          gain.connect(context.destination);
+          oscillator.frequency.value = 740;
+          gain.gain.value = 0.08;
+          oscillator.start();
+          oscillator.stop(context.currentTime + 0.12);
+          void context.close();
+        }
+      }
+      try {
+        setHistory(await api.scanHistory());
+      } catch (reason) {
+        setError(reason instanceof Error ? `Check-in was recorded, but history could not be refreshed: ${reason.message}` : 'Check-in was recorded, but history could not be refreshed.');
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Check-in was not confirmed by the server.');
+    } finally {
+      setCheckingIn(false);
+    }
+  }
+
+  async function scanNextTicket() {
+    lastSubmittedCredentialRef.current = '';
+    setPendingCredential('');
+    setResult(null);
+    setError('');
+    await start();
+  }
+
   const success = result?.result === 'ACCEPTED';
+  const valid = result?.result === 'VALID';
   const duplicate = result?.result === 'ALREADY_USED';
   const unknown = result?.result === 'INVALID';
-  const ineligible = result?.result === 'INELIGIBLE';
+  const ineligible = result?.result === 'INELIGIBLE' || result?.result === 'PAYMENT_NOT_VERIFIED';
   const cancelled = result?.result === 'CANCELLED';
 
   return (
@@ -119,18 +150,20 @@ export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut
             {!running && <div className="pointer-events-none absolute inset-0 grid place-items-center bg-black/60 text-center"><div><CameraOff size={32} className="mx-auto text-white/70" /><p className="mt-3 text-sm text-white/80">Camera paused</p></div></div>}
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 sm:mt-4 sm:gap-3">
-            <button onClick={() => void start()} disabled={running} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-accent px-4 font-medium text-white disabled:opacity-50"><Camera size={18} />Start camera</button>
+            <button onClick={() => void start()} disabled={running || Boolean(pendingCredential) || checkingIn} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-accent px-4 font-medium text-white disabled:opacity-50"><Camera size={18} />Start camera</button>
             <button onClick={() => void stop()} disabled={!running} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-slate-100 px-4 font-medium text-slate-700 disabled:opacity-50"><RotateCcw size={18} />Stop / restart</button>
           </div>
           {error && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
         </section>
         <aside className="space-y-5">
-          <section className={`rounded-3xl p-5 ${result ? success ? 'bg-emerald-400 text-ink' : 'bg-red-400 text-ink' : 'bg-white/10 text-white'}`}>
+          <section className={`rounded-3xl p-5 ${result ? success || valid ? 'bg-emerald-400 text-ink' : 'bg-red-400 text-ink' : 'bg-white/10 text-white'}`}>
             <div className="flex items-center gap-3">
-              {result ? success ? <CheckCircle2 size={25} /> : <XCircle size={25} /> : <Camera size={25} />}
-              <div><p className="text-xs font-semibold uppercase tracking-wide">{result ? success ? 'Check-in confirmed' : duplicate ? 'Already checked in' : ineligible ? 'Payment not verified' : cancelled ? 'Cancelled / revoked' : unknown ? 'Invalid ticket' : 'Scan not confirmed' : 'Ready at the gate'}</p><p className="mt-1 text-sm opacity-80">{result?.ticket_number || (result ? 'Ask attendee to contact event staff.' : 'Start the camera to begin.')}</p></div>
+              {result ? success || valid ? <CheckCircle2 size={25} /> : <XCircle size={25} /> : <Camera size={25} />}
+              <div><p className="text-xs font-semibold uppercase tracking-wide">{result ? success ? 'Check-in confirmed' : result.result === 'VALID' ? 'Ticket valid · awaiting check-in' : duplicate ? 'Already checked in' : ineligible ? 'Payment not verified' : cancelled ? 'Cancelled / revoked' : unknown ? 'Invalid ticket' : 'Scan not confirmed' : 'Ready at the gate'}</p><p className="mt-1 text-sm opacity-80">{result?.ticket_number || (result ? 'Ask attendee to contact event staff.' : 'Start the camera to begin.')}</p></div>
             </div>
             {result?.attendee_name && <div className="mt-5 border-t border-current/15 pt-4"><p className="text-lg font-semibold">{result.attendee_name}</p><p className="mt-1 text-sm opacity-80">{result.ticket_type}</p>{duplicate && result.checked_in_at && <p className="mt-2 text-xs">First check-in: {new Date(result.checked_in_at).toLocaleString()}</p>}</div>}
+            {pendingCredential && <button type="button" disabled={checkingIn} onClick={() => void confirmCheckIn()} className="mt-5 min-h-14 w-full rounded-xl bg-ink px-4 text-base font-bold text-white shadow-lg disabled:opacity-60">{checkingIn ? 'Checking in…' : 'Check in'}</button>}
+            {result && !pendingCredential && !running && <button type="button" onClick={() => void scanNextTicket()} className="mt-5 min-h-12 w-full rounded-xl bg-white px-4 font-semibold text-ink shadow-lg">Scan next ticket</button>}
           </section>
           <section className="rounded-3xl bg-white/10 p-5">
             <div className="flex items-center justify-between"><h2 className="font-semibold">Recent scans</h2><span className="text-xs text-slate-400">This account</span></div>

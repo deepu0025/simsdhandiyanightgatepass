@@ -286,6 +286,26 @@ class TicketOperationsTests(TestCase):
         self.assertIsNotNone(self.ticket.checked_in_at)
         self.assertEqual(self.ticket.scan_events.get().result, CheckIn.Result.ACCEPTED)
 
+    def test_validation_only_reports_valid_without_checking_in(self):
+        self.ticket.external_ticket_id = "sheet-ticket-pending-confirmation"
+        self.ticket.status = Ticket.Status.ISSUED
+        self.ticket.save(update_fields=("external_ticket_id", "status"))
+        client = APIClient()
+        client.force_authenticate(self.scanner)
+
+        response = client.post(
+            "/api/scanner/validate/",
+            {"credential": self.ticket.external_ticket_id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["result"], "VALID")
+        self.assertEqual(response.data["ticket_number"], self.ticket.ticket_number)
+        self.ticket.refresh_from_db()
+        self.assertIsNone(self.ticket.checked_in_at)
+        self.assertFalse(self.ticket.scan_events.exists())
+
     def test_admin_can_manually_check_in_pending_unissued_ticket_with_audited_reason(self):
         self.registration.payment_status = Registration.PaymentStatus.PENDING
         self.registration.save(update_fields=("payment_status",))
