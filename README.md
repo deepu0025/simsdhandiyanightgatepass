@@ -91,6 +91,8 @@ Automatic imports require exactly one active Gatehouse event because sheet rows 
 | `GET /api/admin/dashboard/` | Admin | Live aggregate metrics |
 | `GET/POST /api/admin/events/` | Admin | List events or create an active event from the application |
 | `PATCH /api/admin/events/{id}/` | Admin | Activate or deactivate an event |
+| `GET/POST /api/admin/desks/` | Admin | List or create one of the two on-spot registration desk accounts |
+| `PATCH /api/admin/desks/{id}/` | Admin | Reset a desk password or enable/disable its account |
 | `GET /api/admin/tickets/` | Admin | Ticket search and filtering |
 | `POST /api/admin/registrations/on-spot/` | Admin | Idempotently record an on-spot registration; payment status is set in the spreadsheet and imported before issuance |
 | `POST /api/admin/tickets/{id}/issue/` | Admin | Issue eligible ticket |
@@ -110,6 +112,8 @@ Automatic imports require exactly one active Gatehouse event because sheet rows 
 The scanner response is determined by the backend. PostgreSQL row locks and a conditional unique constraint protect the successful check-in path. Client-side state is not used to determine ticket validity. Imported QR contents are never used as credentials; qualifying rows receive a new random Gatehouse QR.
 
 The admin **Events** page can create and activate events without Django admin or a server shell; new events appear in the import and on-spot registration selectors. The admin **Gate scanners** page provides four mobile-friendly scanner panels. Create one unique login per gate; scanner passwords must be at least 12 characters, are stored as password hashes, and can be reset by an administrator. A scanner account is bound to one gate on the server, so a client cannot change its check-in gate by altering the request. Existing unassigned scanner accounts can be assigned to an open gate before scanning.
+
+The admin **Registration desks** page provides two separate on-spot registration logins. Each account is bound server-side to Desk 1 or Desk 2 and can list active events and submit registrations only; it cannot use admin or scanner endpoints. Desk accounts are managed in the app, require unique login IDs and passwords of at least 12 characters, and can be disabled or have their passwords reset by an administrator. Desk users sign in through the normal login page and are sent directly to their mobile-friendly registration panel.
 
 ## Spreadsheet schema
 

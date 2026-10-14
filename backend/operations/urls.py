@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     DashboardView,
+    DeskUserListView,
     EventDetailView,
     EventListView,
     HealthView,
@@ -49,6 +50,8 @@ urlpatterns = [
     path("admin/import/<uuid:batch_id>/errors.csv/", ImportErrorReportView.as_view(), name="import-errors"),
     path("admin/users/", UserListView.as_view(), name="scanner-users"),
     path("admin/users/<int:user_id>/", UserListView.as_view(), name="scanner-user"),
+    path("admin/desks/", DeskUserListView.as_view(), name="registration-desks"),
+    path("admin/desks/<int:user_id>/", DeskUserListView.as_view(), name="registration-desk"),
     path("scanner/scan/", ScanView.as_view(), name="scan"),
     path("scanner/validate/", ScanValidationView.as_view(), name="scan-validate"),
     path("scanner/check-in/", ScanCheckInView.as_view(), name="scan-check-in"),

@@ -403,6 +403,123 @@ class TicketOperationsTests(TestCase):
         )
         self.assertEqual(client.get("/api/admin/events/").status_code, 200)
 
+    def test_two_on_spot_desk_accounts_are_separate_and_limited_to_registration(self):
+        admin_client = APIClient()
+        admin_client.force_authenticate(self.admin)
+        payload = {
+            "name": "Desk One",
+            "email": "desk-one@example.test",
+            "password": "Unique-desk-password-123!",
+            "desk": "DESK_1",
+        }
+        first = admin_client.post("/api/admin/desks/", payload, format="json")
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.data["role"], User.Role.DESK)
+        self.assertEqual(first.data["desk"], "DESK_1")
+
+        second = admin_client.post(
+            "/api/admin/desks/",
+            {**payload, "email": "desk-two@example.test", "desk": "DESK_2"},
+            format="json",
+        )
+        self.assertEqual(second.status_code, 201)
+
+        duplicate = admin_client.post(
+            "/api/admin/desks/",
+            {**payload, "email": "other-desk-one@example.test"},
+            format="json",
+        )
+        self.assertEqual(duplicate.status_code, 409)
+
+        desk_user = User.objects.get(email="desk-one@example.test")
+        desk_client = APIClient()
+        desk_client.force_authenticate(desk_user)
+        inactive_event = Event.objects.create(
+            name="Inactive Event",
+            starts_at=self.event.starts_at,
+            ends_at=self.event.ends_at,
+            venue="Closed Hall",
+            is_active=False,
+        )
+        events_response = desk_client.get("/api/admin/events/")
+        self.assertEqual(events_response.status_code, 200)
+        self.assertNotIn(str(inactive_event.pk), [event["id"] for event in events_response.data])
+        self.assertEqual(
+            desk_client.post(
+                "/api/admin/events/",
+                {
+                    "name": "Desk-created event",
+                    "starts_at": self.event.starts_at.isoformat(),
+                    "ends_at": self.event.ends_at.isoformat(),
+                    "venue": "Closed Hall",
+                },
+                format="json",
+            ).status_code,
+            403,
+        )
+        self.assertEqual(desk_client.get("/api/admin/dashboard/").status_code, 403)
+        self.assertEqual(desk_client.get("/api/admin/desks/").status_code, 403)
+
+        response = desk_client.post(
+            "/api/admin/registrations/on-spot/",
+            {
+                "event_id": str(self.event.pk),
+                "attendee_name": "Desk Guest",
+                "attendee_email": "desk-guest@example.test",
+                "ticket_type": "General",
+                "payment_method": "CASH",
+                "amount": "100.00",
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="desk-one-registration-1",
+        )
+        self.assertEqual(response.status_code, 201)
+        registration = Registration.objects.get(pk=response.data["registration_id"])
+        self.assertEqual(registration.created_by, desk_user)
+
+        other_desk = User.objects.get(email="desk-two@example.test")
+        other_client = APIClient()
+        other_client.force_authenticate(other_desk)
+        replay = other_client.post(
+            "/api/admin/registrations/on-spot/",
+            {
+                "event_id": str(self.event.pk),
+                "attendee_name": "Desk Guest",
+                "attendee_email": "desk-guest@example.test",
+                "ticket_type": "General",
+                "payment_method": "CASH",
+                "amount": "100.00",
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="desk-one-registration-1",
+        )
+        self.assertEqual(replay.status_code, 409)
+
+    def test_registration_desk_password_can_be_reset_and_login_disabled(self):
+        admin_client = APIClient()
+        admin_client.force_authenticate(self.admin)
+        created = admin_client.post(
+            "/api/admin/desks/",
+            {
+                "name": "Desk One",
+                "email": "desk-reset@example.test",
+                "password": "Unique-desk-password-123!",
+                "desk": "DESK_1",
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        user_id = created.data["id"]
+        updated = admin_client.patch(
+            f"/api/admin/desks/{user_id}/",
+            {"password": "Updated-desk-password-123!", "is_active": False},
+            format="json",
+        )
+        self.assertEqual(updated.status_code, 200)
+        desk_user = User.objects.get(pk=user_id)
+        self.assertFalse(desk_user.is_active)
+        self.assertTrue(desk_user.check_password("Updated-desk-password-123!"))
+
     def test_event_creation_requires_admin_and_valid_time_range(self):
         scanner_client = APIClient()
         scanner_client.force_authenticate(self.scanner)

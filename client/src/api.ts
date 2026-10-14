@@ -2,8 +2,9 @@ export type User = {
   id: number;
   email: string;
   name: string;
-  role: 'ADMIN' | 'SCANNER';
+  role: 'ADMIN' | 'SCANNER' | 'DESK';
   gate?: '' | 'GATE_1' | 'GATE_2' | 'GATE_3' | 'GATE_4';
+  desk?: '' | 'DESK_1' | 'DESK_2';
   is_active?: boolean;
 };
 
@@ -12,6 +13,13 @@ export type GateId = 'GATE_1' | 'GATE_2' | 'GATE_3' | 'GATE_4';
 export type ScannerAccount = User & {
   role: 'SCANNER';
   gate: GateId | '';
+  is_active: boolean;
+};
+
+export type DeskId = 'DESK_1' | 'DESK_2';
+export type DeskAccount = User & {
+  role: 'DESK';
+  desk: DeskId | '';
   is_active: boolean;
 };
 
@@ -168,6 +176,11 @@ export const api = {
     request<ScannerAccount>('/admin/users/', { method: 'POST', body: JSON.stringify(payload) }),
   updateScannerAccount: (userId: number, payload: { password?: string; is_active?: boolean; gate?: GateId }) =>
     request<ScannerAccount>(`/admin/users/${userId}/`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deskAccounts: () => request<DeskAccount[]>('/admin/desks/'),
+  createDeskAccount: (payload: { name: string; email: string; password: string; desk: DeskId }) =>
+    request<DeskAccount>('/admin/desks/', { method: 'POST', body: JSON.stringify(payload) }),
+  updateDeskAccount: (userId: number, payload: { password?: string; is_active?: boolean; desk?: DeskId }) =>
+    request<DeskAccount>(`/admin/desks/${userId}/`, { method: 'PATCH', body: JSON.stringify(payload) }),
   createOnSpotRegistration: (payload: {
     event_id: string;
     attendee_name: string;

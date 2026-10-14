@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { CheckCircle2, Download, Mail, UserPlus } from 'lucide-react';
+import { CheckCircle2, Download, LogOut, Mail, UserPlus } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { api, type EventRecord, type TicketRecord } from '../api';
+import { api, type EventRecord, type TicketRecord, type User } from '../api';
 
 type CreatedResult = {
   registration_id: string;
@@ -11,7 +11,7 @@ type CreatedResult = {
   replayed: boolean;
 };
 
-export default function OnSpotPage() {
+export default function OnSpotPage({ user, onSignOut }: { user?: User; onSignOut?: () => void } = {}) {
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [eventId, setEventId] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'CARD' | 'UPI'>('CASH');
@@ -82,12 +82,24 @@ export default function OnSpotPage() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div className={user?.role === 'DESK' ? 'min-h-screen bg-ink px-3 pb-8 pt-4 sm:px-6 sm:pt-5' : ''}>
+      {user?.role === 'DESK' && <header className="mx-auto flex max-w-4xl items-center justify-between gap-3 text-white">
+        <div className="min-w-0">
+          <p className="text-[0.65rem] font-semibold tracking-[0.2em] text-emerald-300">GATEHOUSE · REGISTRATION</p>
+          <h1 className="mt-1 text-xl font-semibold">On-spot desk</h1>
+          <p className="mt-1 truncate text-xs text-slate-400">{user.name || user.email}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {user.desk && <span className="rounded-full bg-emerald-400 px-3 py-1.5 text-xs font-bold text-ink">{user.desk.replace('_', ' ')}</span>}
+          <button type="button" aria-label="Sign out" onClick={onSignOut} className="scanner-icon"><LogOut size={19} /></button>
+        </div>
+      </header>}
+      <div className={`mx-auto max-w-4xl ${user?.role === 'DESK' ? 'mt-4 rounded-2xl bg-white p-3 sm:mt-6 sm:rounded-3xl sm:p-6' : ''}`}>
       <p className="text-sm font-medium text-accent">Ticket operations</p>
       <h1 className="mt-2 text-3xl font-semibold tracking-tight text-ink">On-spot registration</h1>
       <p className="mt-2 text-sm leading-relaxed text-slate-500">Record a walk-up attendee and payment details. Payment status is managed in the spreadsheet; import its verified status to issue a scannable ticket.</p>
-      {events.length === 0 && <p className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">There are no active events. <Link to="/events" className="font-semibold underline">Create an event in Gatehouse</Link> first.</p>}
-      {!result && <form id="onspot-form" onSubmit={submit} className="mt-8 rounded-2xl border border-slate-200/80 bg-white p-6 sm:p-8">
+      {events.length === 0 && <p className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{user?.role === 'DESK' ? 'There are no active events yet. Please contact the administrator.' : <>There are no active events. <Link to="/events" className="font-semibold underline">Create an event in Gatehouse</Link> first.</>}</p>}
+      {!result && <form id="onspot-form" onSubmit={submit} className="mt-6 rounded-2xl border border-slate-200/80 bg-white p-4 sm:mt-8 sm:p-8">
         <label className="block text-sm font-medium text-slate-700">Event
           <select required value={eventId} onChange={(event) => setEventId(event.target.value)} className="field mt-2">
             <option value="">Select active event</option>{events.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.venue}</option>)}
@@ -119,12 +131,13 @@ export default function OnSpotPage() {
         <dl className="mt-6 grid gap-x-8 gap-y-4 sm:grid-cols-2"><div><dt className="text-xs uppercase tracking-wide text-slate-500">Ticket</dt><dd className="mt-1 font-semibold text-ink">{result.ticket.ticket_number}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Ticket ID · use as sheet ticket_id</dt><dd className="mt-1 break-all font-mono text-xs text-ink">{result.ticket.id}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Attendee</dt><dd className="mt-1 font-semibold text-ink">{result.ticket.attendee_name}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Email</dt><dd className="mt-1 text-ink">{result.ticket.attendee_email}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Ticket state · sheet payment status</dt><dd className="mt-1 text-ink">{result.ticket.status} · {result.ticket.payment_status}</dd></div></dl>
         {error && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-700">{error}</p>}
         <div className="mt-6 flex flex-wrap gap-3">
-          {result.issued && result.pdf_url && <a href={result.pdf_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white"><Download size={17} />Download ticket PDF</a>}
-          {result.issued && result.ticket.email_status !== 'SENT' && result.ticket.email_status !== 'PROCESSING' && <button onClick={() => void sendEmail()} disabled={emailBusy} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-ink disabled:opacity-50"><Mail size={17} />{emailBusy ? 'Sending…' : result.ticket.email_status === 'FAILED' || emailStatus === 'FAILED' ? 'Retry email' : 'Email ticket'}</button>}
+          {user?.role !== 'DESK' && result.issued && result.pdf_url && <a href={result.pdf_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white"><Download size={17} />Download ticket PDF</a>}
+          {user?.role !== 'DESK' && result.issued && result.ticket.email_status !== 'SENT' && result.ticket.email_status !== 'PROCESSING' && <button onClick={() => void sendEmail()} disabled={emailBusy} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-ink disabled:opacity-50"><Mail size={17} />{emailBusy ? 'Sending…' : result.ticket.email_status === 'FAILED' || emailStatus === 'FAILED' ? 'Retry email' : 'Email ticket'}</button>}
           {emailStatus && <span className="self-center text-sm text-slate-600">Email: {emailStatus}</span>}
           <button onClick={startNext} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700">New registration</button>
         </div>
       </section>}
+      </div>
     </div>
   );
 }

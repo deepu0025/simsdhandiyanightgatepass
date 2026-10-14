@@ -37,6 +37,7 @@ class User(AbstractUser):
     class Role(models.TextChoices):
         ADMIN = "ADMIN", "Administrator"
         SCANNER = "SCANNER", "Scanner"
+        DESK = "DESK", "Registration desk"
 
     username = None
     email = models.EmailField(unique=True)
@@ -45,6 +46,12 @@ class User(AbstractUser):
     gate = models.CharField(
         max_length=16,
         choices=(("", "Unassigned"), ("GATE_1", "Gate 1"), ("GATE_2", "Gate 2"), ("GATE_3", "Gate 3"), ("GATE_4", "Gate 4")),
+        blank=True,
+        default="",
+    )
+    desk = models.CharField(
+        max_length=16,
+        choices=(("", "Unassigned"), ("DESK_1", "Desk 1"), ("DESK_2", "Desk 2")),
         blank=True,
         default="",
     )
@@ -58,7 +65,12 @@ class User(AbstractUser):
                 fields=("gate",),
                 condition=models.Q(role="SCANNER") & ~models.Q(gate=""),
                 name="one_scanner_account_per_gate",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=("desk",),
+                condition=models.Q(role="DESK") & ~models.Q(desk=""),
+                name="one_registration_account_per_desk",
+            ),
         ]
 
     def __str__(self):

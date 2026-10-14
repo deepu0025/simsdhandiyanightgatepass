@@ -17,3 +17,12 @@ class IsAdminOrScanner(BasePermission):
             and request.user.is_authenticated
             and request.user.role in {"ADMIN", "SCANNER"}
         )
+
+
+class IsAdminOrRegistrationDesk(BasePermission):
+    def has_permission(self, request, view):
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.role in {"ADMIN", "DESK"}
+        )

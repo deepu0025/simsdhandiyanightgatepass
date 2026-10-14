@@ -1,4 +1,4 @@
-import { Activity, CalendarDays, ClipboardPlus, LayoutDashboard, LogOut, ScanLine, Upload, TicketCheck } from 'lucide-react';
+import { Activity, CalendarDays, ClipboardPlus, LayoutDashboard, LogOut, ScanLine, Upload, TicketCheck, UsersRound } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import type { User } from '../api';
@@ -28,6 +28,7 @@ export default function Shell({
           <NavLink to="/on-spot" className={({ isActive }) => `nav-item ${isActive ? 'nav-active' : ''}`}><ClipboardPlus size={18} />On-spot registration</NavLink>
           <NavLink to="/scanner" className="nav-item"><Activity size={18} />Scanner panel</NavLink>
           <NavLink to="/gate-access" className={({ isActive }) => `nav-item ${isActive ? 'nav-active' : ''}`}><ScanLine size={18} />Gate scanners</NavLink>
+          <NavLink to="/desk-access" className={({ isActive }) => `nav-item ${isActive ? 'nav-active' : ''}`}><UsersRound size={18} />Registration desks</NavLink>
         </nav>
         <div className="mt-auto hidden border-t border-white/10 p-5 lg:block">
           <p className="truncate text-sm font-medium">{user.name || user.email}</p>

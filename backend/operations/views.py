@@ -32,7 +32,7 @@ from .models import (
 from .email_delivery import EmailDeliveryConflict, EmailDeliveryError, send_ticket_email
 from .import_commit import commit_import_batch
 from .imports import batch_preview, create_import_batch
-from .permissions import IsAdmin, IsAdminOrScanner
+from .permissions import IsAdmin, IsAdminOrRegistrationDesk, IsAdminOrScanner
 from .serializers import (
     CheckInSerializer,
     EventSerializer,
@@ -136,12 +136,17 @@ class DashboardView(APIView):
 
 
 class EventListView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAdminOrRegistrationDesk]
 
     def get(self, request):
-        return Response(EventSerializer(Event.objects.all(), many=True).data)
+        events = Event.objects.all()
+        if request.user.role == User.Role.DESK:
+            events = events.filter(is_active=True)
+        return Response(EventSerializer(events, many=True).data)
 
     def post(self, request):
+        if request.user.role != User.Role.ADMIN and not request.user.is_superuser:
+            return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = EventSerializer(data={**request.data, "is_active": True})
         serializer.is_valid(raise_exception=True)
         event = serializer.save()
@@ -244,7 +249,7 @@ class ManualCheckInView(APIView):
 
 
 class OnSpotRegistrationView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAdminOrRegistrationDesk]
 
     @transaction.atomic
     def post(self, request):
@@ -259,6 +264,11 @@ class OnSpotRegistrationView(APIView):
             )
         existing = Registration.objects.filter(idempotency_key=idempotency_key).first()
         if existing:
+            if request.user.role == User.Role.DESK and existing.created_by_id != request.user.pk:
+                return Response(
+                    {"detail": "This registration request belongs to another desk account."},
+                    status=status.HTTP_409_CONFLICT,
+                )
             ticket = existing.tickets.first()
             same_request = (
                 existing.event_id == data["event_id"]
@@ -725,6 +735,79 @@ class UserListView(APIView):
             AuditLog.objects.create(
                 actor=request.user,
                 action="SCANNER_UPDATED",
+                object_type="User",
+                object_id=str(user.pk),
+                details={"updated_fields": sorted(set(update_fields))},
+            )
+        return Response(UserSerializer(user).data)
+
+
+class DeskUserListView(APIView):
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        users = User.objects.filter(role=User.Role.DESK).order_by("desk", "email")
+        return Response(UserSerializer(users, many=True).data)
+
+    def post(self, request):
+        email = str(request.data.get("email", "")).strip().lower()
+        name = str(request.data.get("name", "")).strip()
+        password = request.data.get("password")
+        desk = str(request.data.get("desk", "")).strip().upper()
+        if desk not in {"DESK_1", "DESK_2"}:
+            return Response({"detail": "Choose Desk 1 or Desk 2."}, status=400)
+        if not email or not isinstance(password, str) or len(password) < 12:
+            return Response({"detail": "Email and a password of at least 12 characters are required."}, status=400)
+        if User.objects.filter(email__iexact=email).exists():
+            return Response({"detail": "A user already uses this login ID."}, status=409)
+        if User.objects.filter(desk=desk, role=User.Role.DESK).exists():
+            return Response({"detail": "A registration account is already assigned to this desk."}, status=409)
+        user = User.objects.create_user(
+            email=email,
+            password=password,
+            name=name,
+            role=User.Role.DESK,
+            desk=desk,
+        )
+        AuditLog.objects.create(
+            actor=request.user,
+            action="REGISTRATION_DESK_CREATED",
+            object_type="User",
+            object_id=str(user.pk),
+            details={"desk": desk},
+        )
+        return Response(UserSerializer(user).data, status=201)
+
+    def patch(self, request, user_id=None):
+        if not user_id:
+            return Response(status=404)
+        try:
+            user = User.objects.get(pk=user_id, role=User.Role.DESK)
+        except User.DoesNotExist as error:
+            raise Http404 from error
+        update_fields = []
+        if "is_active" in request.data:
+            user.is_active = bool(request.data["is_active"])
+            update_fields.append("is_active")
+        if "desk" in request.data:
+            desk = str(request.data.get("desk", "")).strip().upper()
+            if desk not in {"DESK_1", "DESK_2"}:
+                return Response({"detail": "Choose Desk 1 or Desk 2."}, status=400)
+            if User.objects.filter(desk=desk, role=User.Role.DESK).exclude(pk=user.pk).exists():
+                return Response({"detail": "A registration account is already assigned to this desk."}, status=409)
+            user.desk = desk
+            update_fields.append("desk")
+        if "password" in request.data:
+            password = request.data["password"]
+            if not isinstance(password, str) or len(password) < 12:
+                return Response({"detail": "A password of at least 12 characters is required."}, status=400)
+            user.set_password(password)
+            update_fields.append("password")
+        if update_fields:
+            user.save(update_fields=update_fields)
+            AuditLog.objects.create(
+                actor=request.user,
+                action="REGISTRATION_DESK_UPDATED",
                 object_type="User",
                 object_id=str(user.pk),
                 details={"updated_fields": sorted(set(update_fields))},

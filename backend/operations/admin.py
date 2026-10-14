@@ -16,10 +16,10 @@ from .models import (
 @admin.register(User)
 class UserAdmin(DjangoUserAdmin):
     ordering = ("email",)
-    list_display = ("email", "name", "role", "is_active", "is_staff")
+    list_display = ("email", "name", "role", "gate", "desk", "is_active", "is_staff")
     fieldsets = (
         (None, {"fields": ("email", "password")}),
-        ("Profile", {"fields": ("name", "role")}),
+        ("Profile", {"fields": ("name", "role", "gate", "desk")}),
         ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions")}),
         ("Dates", {"fields": ("last_login", "date_joined")}),
     )

@@ -49,7 +49,7 @@ export default function LoginPage({ onLogin }: { onLogin: (email: string, passwo
           <button disabled={busy} className="mt-7 flex w-full items-center justify-between rounded-xl bg-ink px-5 py-3.5 font-medium text-white transition hover:bg-accent disabled:opacity-60">
             {busy ? 'Signing in…' : 'Sign in'}<ArrowRight size={18} />
           </button>
-          <p className="mt-5 text-xs leading-relaxed text-slate-500">Scanner and admin access are assigned by an administrator.</p>
+          <p className="mt-5 text-xs leading-relaxed text-slate-500">Admin, scanner, and registration desk access are assigned by an administrator.</p>
         </form>
       </section>
     </main>

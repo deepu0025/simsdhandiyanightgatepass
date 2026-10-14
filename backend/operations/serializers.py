@@ -7,7 +7,7 @@ from .models import CheckIn, Event, Registration, Ticket, User
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ("id", "email", "name", "role", "gate", "is_active")
+        fields = ("id", "email", "name", "role", "gate", "desk", "is_active")
 
 
 class LoginSerializer(serializers.Serializer):
