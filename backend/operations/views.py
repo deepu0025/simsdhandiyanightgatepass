@@ -141,6 +141,40 @@ class EventListView(APIView):
     def get(self, request):
         return Response(EventSerializer(Event.objects.all(), many=True).data)
 
+    def post(self, request):
+        serializer = EventSerializer(data={**request.data, "is_active": True})
+        serializer.is_valid(raise_exception=True)
+        event = serializer.save()
+        AuditLog.objects.create(
+            actor=request.user,
+            action="EVENT_CREATED",
+            object_type="Event",
+            object_id=str(event.pk),
+            details={"name": event.name, "is_active": event.is_active},
+        )
+        return Response(EventSerializer(event).data, status=status.HTTP_201_CREATED)
+
+
+class EventDetailView(APIView):
+    permission_classes = [IsAdmin]
+
+    def patch(self, request, event_id):
+        try:
+            event = Event.objects.get(pk=event_id)
+        except Event.DoesNotExist as error:
+            raise Http404 from error
+        serializer = EventSerializer(event, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        event = serializer.save()
+        AuditLog.objects.create(
+            actor=request.user,
+            action="EVENT_UPDATED",
+            object_type="Event",
+            object_id=str(event.pk),
+            details={"updated_fields": sorted(request.data.keys())},
+        )
+        return Response(EventSerializer(event).data)
+
 
 class TicketListView(APIView):
     permission_classes = [IsAdmin]

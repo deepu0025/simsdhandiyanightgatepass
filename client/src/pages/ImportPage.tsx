@@ -1,5 +1,6 @@
 import { useEffect, useState, type ChangeEvent } from 'react';
 import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, Sheet, UploadCloud } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api, type EventRecord, type ImportPreviewData } from '../api';
 
 type Preview = ImportPreviewData;
@@ -90,6 +91,7 @@ export default function ImportPage() {
       <p className="text-sm font-medium text-accent">Data management</p>
       <h1 className="mt-2 text-3xl font-semibold tracking-tight text-ink">Import ticket records</h1>
       <p className="mt-2 text-sm leading-relaxed text-slate-500">Preview Google Sheets, CSV, or Excel rows, inspect issues, then explicitly commit valid rows. Payment authorization comes from the imported sheet status, not from this application.</p>
+      {events.length === 0 && <p className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">There are no active events. <Link to="/events" className="font-semibold underline">Create an event in Gatehouse</Link> first.</p>}
       <section className="mt-8 rounded-2xl border border-slate-200/80 bg-white p-6 sm:p-8">
         <label className="mb-5 block text-sm font-medium text-slate-700">Event for these records
           <select value={eventId} onChange={(event) => { setEventId(event.target.value); setPreview(null); setResult(null); }} className="field mt-2">

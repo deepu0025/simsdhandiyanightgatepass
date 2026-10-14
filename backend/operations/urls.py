@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     DashboardView,
+    EventDetailView,
     EventListView,
     HealthView,
     ImportPreviewView,
@@ -34,6 +35,7 @@ urlpatterns = [
     path("auth/me/", MeView.as_view(), name="me"),
     path("admin/dashboard/", DashboardView.as_view(), name="dashboard"),
     path("admin/events/", EventListView.as_view(), name="events"),
+    path("admin/events/<uuid:event_id>/", EventDetailView.as_view(), name="event-detail"),
     path("admin/tickets/", TicketListView.as_view(), name="tickets"),
     path("admin/tickets/<uuid:ticket_id>/manual-check-in/", ManualCheckInView.as_view(), name="manual-check-in"),
     path("admin/tickets/<uuid:ticket_id>/issue/", IssueTicketView.as_view(), name="issue-ticket"),

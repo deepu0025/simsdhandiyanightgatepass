@@ -5,6 +5,7 @@ import LoginPage from './pages/LoginPage';
 import Shell from './components/Shell';
 
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
+const EventsPage = lazy(() => import('./pages/EventsPage'));
 const ImportPage = lazy(() => import('./pages/ImportPage'));
 const OnSpotPage = lazy(() => import('./pages/OnSpotPage'));
 const ScannerPage = lazy(() => import('./pages/ScannerPage'));
@@ -58,6 +59,16 @@ export default function App() {
           user?.role === 'ADMIN' ? (
             <Shell user={user} onSignOut={signOut}>
               <Suspense fallback={pending}><ImportPage /></Suspense>
+            </Shell>
+          ) : user ? <Navigate to="/scanner" replace /> : <Navigate to="/login" replace />
+        }
+      />
+      <Route
+        path="/events"
+        element={
+          user?.role === 'ADMIN' ? (
+            <Shell user={user} onSignOut={signOut}>
+              <Suspense fallback={pending}><EventsPage /></Suspense>
             </Shell>
           ) : user ? <Navigate to="/scanner" replace /> : <Navigate to="/login" replace />
         }

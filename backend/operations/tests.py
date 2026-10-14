@@ -379,6 +379,50 @@ class TicketOperationsTests(TestCase):
         client.force_authenticate(self.scanner)
         self.assertEqual(client.get("/api/admin/dashboard/").status_code, 403)
 
+    def test_admin_can_create_and_activate_event_in_application(self):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        starts_at = timezone.now() + timedelta(days=7)
+        response = client.post(
+            "/api/admin/events/",
+            {
+                "name": "Launch Event",
+                "starts_at": starts_at.isoformat(),
+                "ends_at": (starts_at + timedelta(hours=3)).isoformat(),
+                "venue": "Main Hall",
+                "instructions": "Use the north entrance.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data["is_active"])
+        self.assertEqual(Event.objects.get(pk=response.data["id"]).name, "Launch Event")
+        self.assertTrue(
+            AuditLog.objects.filter(action="EVENT_CREATED", object_id=response.data["id"]).exists()
+        )
+        self.assertEqual(client.get("/api/admin/events/").status_code, 200)
+
+    def test_event_creation_requires_admin_and_valid_time_range(self):
+        scanner_client = APIClient()
+        scanner_client.force_authenticate(self.scanner)
+        starts_at = timezone.now() + timedelta(days=7)
+        payload = {
+            "name": "Unauthorized Event",
+            "starts_at": starts_at.isoformat(),
+            "ends_at": (starts_at + timedelta(hours=1)).isoformat(),
+            "venue": "Main Hall",
+            "instructions": "",
+        }
+        self.assertEqual(scanner_client.post("/api/admin/events/", payload, format="json").status_code, 403)
+
+        admin_client = APIClient()
+        admin_client.force_authenticate(self.admin)
+        payload["ends_at"] = (starts_at - timedelta(hours=1)).isoformat()
+        invalid = admin_client.post("/api/admin/events/", payload, format="json")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertFalse(Event.objects.filter(name="Unauthorized Event").exists())
+
     def test_admin_creates_gate_scanner_and_gate_is_bound_to_account(self):
         admin_client = APIClient()
         admin_client.force_authenticate(self.admin)

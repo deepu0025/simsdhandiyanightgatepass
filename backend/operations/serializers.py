@@ -27,6 +27,13 @@ class LoginSerializer(serializers.Serializer):
 
 
 class EventSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        starts_at = attrs.get("starts_at", getattr(self.instance, "starts_at", None))
+        ends_at = attrs.get("ends_at", getattr(self.instance, "ends_at", None))
+        if starts_at and ends_at and ends_at <= starts_at:
+            raise serializers.ValidationError({"ends_at": "Event end must be after its start."})
+        return attrs
+
     class Meta:
         model = Event
         fields = ("id", "name", "starts_at", "ends_at", "venue", "instructions", "is_active")

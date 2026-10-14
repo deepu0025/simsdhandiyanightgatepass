@@ -57,8 +57,17 @@ export type EventRecord = {
   id: string;
   name: string;
   starts_at: string;
+  ends_at: string;
   venue: string;
   is_active: boolean;
+};
+
+export type NewEvent = {
+  name: string;
+  starts_at: string;
+  ends_at: string;
+  venue: string;
+  instructions: string;
 };
 
 export type ImportPreviewData = {
@@ -150,6 +159,10 @@ export const api = {
       `/admin/tickets/?page_size=50${query ? `&q=${encodeURIComponent(query)}` : ''}`,
     ),
   events: () => request<EventRecord[]>('/admin/events/'),
+  createEvent: (payload: NewEvent) =>
+    request<EventRecord>('/admin/events/', { method: 'POST', body: JSON.stringify(payload) }),
+  updateEvent: (eventId: string, payload: Partial<Pick<EventRecord, 'is_active'>>) =>
+    request<EventRecord>(`/admin/events/${eventId}/`, { method: 'PATCH', body: JSON.stringify(payload) }),
   scannerAccounts: () => request<ScannerAccount[]>('/admin/users/'),
   createScannerAccount: (payload: { name: string; email: string; password: string; gate: GateId }) =>
     request<ScannerAccount>('/admin/users/', { method: 'POST', body: JSON.stringify(payload) }),

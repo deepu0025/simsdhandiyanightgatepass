@@ -89,6 +89,8 @@ Automatic imports require exactly one active Gatehouse event because sheet rows 
 | `GET /api/csrf/` | Public | Initialize session CSRF token |
 | `POST /api/auth/login/`, `POST /api/auth/logout/`, `GET /api/auth/me/` | Session | Authentication |
 | `GET /api/admin/dashboard/` | Admin | Live aggregate metrics |
+| `GET/POST /api/admin/events/` | Admin | List events or create an active event from the application |
+| `PATCH /api/admin/events/{id}/` | Admin | Activate or deactivate an event |
 | `GET /api/admin/tickets/` | Admin | Ticket search and filtering |
 | `POST /api/admin/registrations/on-spot/` | Admin | Idempotently record an on-spot registration; payment status is set in the spreadsheet and imported before issuance |
 | `POST /api/admin/tickets/{id}/issue/` | Admin | Issue eligible ticket |
@@ -107,7 +109,7 @@ Automatic imports require exactly one active Gatehouse event because sheet rows 
 
 The scanner response is determined by the backend. PostgreSQL row locks and a conditional unique constraint protect the successful check-in path. Client-side state is not used to determine ticket validity. Imported QR contents are never used as credentials; qualifying rows receive a new random Gatehouse QR.
 
-The admin **Gate scanners** page provides four mobile-friendly scanner panels. Create one unique login per gate; scanner passwords must be at least 12 characters, are stored as password hashes, and can be reset by an administrator. A scanner account is bound to one gate on the server, so a client cannot change its check-in gate by altering the request. Existing unassigned scanner accounts must be replaced with gate-assigned accounts or assigned a gate before scanning.
+The admin **Events** page can create and activate events without Django admin or a server shell; new events appear in the import and on-spot registration selectors. The admin **Gate scanners** page provides four mobile-friendly scanner panels. Create one unique login per gate; scanner passwords must be at least 12 characters, are stored as password hashes, and can be reset by an administrator. A scanner account is bound to one gate on the server, so a client cannot change its check-in gate by altering the request. Existing unassigned scanner accounts can be assigned to an open gate before scanning.
 
 ## Spreadsheet schema
 

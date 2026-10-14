@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { CheckCircle2, Download, Mail, UserPlus } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api, type EventRecord, type TicketRecord } from '../api';
 
 type CreatedResult = {
@@ -85,6 +86,7 @@ export default function OnSpotPage() {
       <p className="text-sm font-medium text-accent">Ticket operations</p>
       <h1 className="mt-2 text-3xl font-semibold tracking-tight text-ink">On-spot registration</h1>
       <p className="mt-2 text-sm leading-relaxed text-slate-500">Record a walk-up attendee and payment details. Payment status is managed in the spreadsheet; import its verified status to issue a scannable ticket.</p>
+      {events.length === 0 && <p className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">There are no active events. <Link to="/events" className="font-semibold underline">Create an event in Gatehouse</Link> first.</p>}
       {!result && <form id="onspot-form" onSubmit={submit} className="mt-8 rounded-2xl border border-slate-200/80 bg-white p-6 sm:p-8">
         <label className="block text-sm font-medium text-slate-700">Event
           <select required value={eventId} onChange={(event) => setEventId(event.target.value)} className="field mt-2">
