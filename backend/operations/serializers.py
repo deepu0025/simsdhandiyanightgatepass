@@ -45,6 +45,7 @@ class TicketSerializer(serializers.ModelSerializer):
     attendee_email = serializers.EmailField(read_only=True)
     checkin_method = serializers.SerializerMethodField()
     eligibility_basis = serializers.SerializerMethodField()
+    registration_desk = serializers.SerializerMethodField()
 
     def get_checkin_method(self, obj):
         checkins = getattr(obj, "successful_checkins", None)
@@ -63,12 +64,21 @@ class TicketSerializer(serializers.ModelSerializer):
             return "IMPORTED_EMAIL_SENT"
         return None
 
+    def get_registration_desk(self, obj):
+        creator = obj.registration.created_by
+        if creator and creator.desk:
+            return creator.desk
+        if obj.registration.source == Registration.Source.ON_SPOT:
+            return "ADMIN"
+        return None
+
     class Meta:
         model = Ticket
         fields = (
             "id", "ticket_number", "registration_id", "source", "ticket_type",
             "attendee_name", "attendee_email", "status", "email_status",
             "payment_status", "checked_in_at", "checkin_method", "eligibility_basis",
+            "registration_desk",
             "generated_at", "created_at",
         )
 

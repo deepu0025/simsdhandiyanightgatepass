@@ -2,7 +2,7 @@
 
 A standalone operations application, kept separate from the public ticket-booking website. It includes a Django REST API, role-based sessions, event/ticket records, QR/PDF ticket issuance, atomic check-in, an admin dashboard, a mobile scanner, staged CSV/XLSX imports, and on-spot registration.
 
-Admins can manually check in a guest without a QR scan from the ticket register. A reason is required and recorded with the actor and outcome in check-in history and the audit log. This override can admit pending/unissued tickets, but cannot admit cancelled/revoked tickets or check in a ticket twice. Payment review happens in the spreadsheet; after an admin explicitly commits an import with a verified payment status, Gatehouse issues the QR/PDF. Scanning validates the issued ticket and its revocation/check-in state without rechecking payment.
+Admins can manually check in a guest without a QR scan from the ticket register. A reason is required and recorded with the actor and outcome in check-in history and the audit log. This override can admit pending/unissued tickets, but cannot admit cancelled/revoked tickets or check in a ticket twice. Online ticket payment review happens in the spreadsheet; after an admin explicitly commits an import with a verified payment status, Gatehouse issues the QR/PDF. For on-spot registrations, the attendant confirms payment at the desk; Gatehouse records the verification, issues the ticket, and checks the attendee in immediately. The check-in is attributed to the logged-in desk/admin account. Scanning validates the issued ticket and its revocation/check-in state without rechecking payment.
 
 ## Project structure
 
@@ -65,7 +65,7 @@ Keep OAuth client secrets and refresh tokens only in `.env` or a deployment secr
 
 ## Google Sheets synchronization setup
 
-Payment status is maintained in Google Sheets and imported into Gatehouse automatically; Gatehouse does not independently approve payments. The continuous worker checks both `Online_Tickets` and `OnSpot_Tickets` every 30 seconds, validates changed snapshots, and commits them through the normal import path. Imported verified payment status or imported sent-email evidence can authorize ticket issuance. The worker does not send ticket emails. Sheets access and import failures do not block scanning or other operations.
+Online payment status is maintained in Google Sheets and imported into Gatehouse automatically; Gatehouse does not independently approve online payments. On-spot payments are confirmed by the attendant during registration and are immediately marked verified and checked in. Each on-spot registration is synced to `OnSpot_Tickets` before the API response when Sheets is configured; transient failures are retained for retry by the worker, while configuration or permanent sheet errors are reported as failed sync jobs. Rows include attendee/contact and payment details, event and registration IDs, verification and issue timestamps, check-in time, verifying account, and the on-spot desk number. Existing worksheets with the previous header are extended automatically. The continuous worker checks both `Online_Tickets` and `OnSpot_Tickets` every 30 seconds, validates changed snapshots, and commits them through the normal import path. Imported verified payment status or imported sent-email evidence can authorize ticket issuance. The worker does not send ticket emails. Sheets access and import failures do not block scanning or other operations.
 
 1. In Google Cloud Console, enable **Google Sheets API** for the project.
 2. Create a service account and download its JSON key. Store that file only on the backend host, outside source control (for example, under the ignored `backend/secrets/` folder); do not paste the JSON or private key into `.env`.
@@ -94,7 +94,7 @@ Automatic imports require exactly one active Gatehouse event because sheet rows 
 | `GET/POST /api/admin/desks/` | Admin | List or create one of the two on-spot registration desk accounts |
 | `PATCH /api/admin/desks/{id}/` | Admin | Reset a desk password or enable/disable its account |
 | `GET /api/admin/tickets/` | Admin | Ticket search and filtering |
-| `POST /api/admin/registrations/on-spot/` | Admin | Idempotently record an on-spot registration; payment status is set in the spreadsheet and imported before issuance |
+| `POST /api/admin/registrations/on-spot/` | Admin or registration desk | Idempotently record the confirmed on-spot payment, issue the ticket, check the attendee in, and sync the complete record to `OnSpot_Tickets` |
 | `POST /api/admin/tickets/{id}/issue/` | Admin | Issue eligible ticket |
 | `POST /api/admin/tickets/{id}/status/` | Admin | Cancel or revoke an issued ticket; body accepts `CANCELLED`/`REVOKED` plus an optional reason |
 | `POST /api/admin/tickets/{id}/email/` | Admin | Send once, or manually retry a failed ticket email through Gmail OAuth |

@@ -39,6 +39,10 @@ IMPORT_COLUMNS = (
     "created_at",
     "updated_at",
     "last_synced_at",
+    "event_id",
+    "event_name",
+    "registration_created_at",
+    "registration_desk",
 )
 REQUIRED_COLUMNS = {"ticket_id", "ticket_number", "ticket_type", "name", "email"}
 PAYMENT_STATUSES = {"", "PENDING", "PAID", "CAPTURED", "VERIFIED", "REJECTED", "FAILED"}
@@ -61,6 +65,7 @@ DATETIME_COLUMNS = (
     "created_at",
     "updated_at",
     "last_synced_at",
+    "registration_created_at",
 )
 
 

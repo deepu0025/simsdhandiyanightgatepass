@@ -39,6 +39,10 @@ SHEET_COLUMNS = (
     "created_at",
     "updated_at",
     "last_synced_at",
+    "event_id",
+    "event_name",
+    "registration_created_at",
+    "registration_desk",
 )
 SHEET_NAMES = ("Online_Tickets", "OnSpot_Tickets")
 SAFE_SYNC_ERROR = "Google Sheets sync failed; the job will be retried."
@@ -132,16 +136,36 @@ def _ensure_worksheets(service):
         current = (
             service.spreadsheets()
             .values()
-            .get(spreadsheetId=spreadsheet_id, range=f"'{name}'!A1:X1")
+            .get(spreadsheetId=spreadsheet_id, range=f"'{name}'!A1:AB1")
             .execute()
             .get("values", [])
         )
         if not current:
             service.spreadsheets().values().update(
                 spreadsheetId=spreadsheet_id,
-                range=f"'{name}'!A1:X1",
+                range=f"'{name}'!A1:AB1",
                 valueInputOption="RAW",
                 body={"values": [list(SHEET_COLUMNS)]},
+            ).execute()
+        elif (
+            len(current[0]) < len(SHEET_COLUMNS)
+            and current[0] == list(SHEET_COLUMNS[: len(current[0])])
+        ):
+            column_number = len(current[0]) + 1
+            column_name = ""
+            while column_number:
+                column_number, remainder = divmod(column_number - 1, 26)
+                column_name = chr(65 + remainder) + column_name
+            end_column_number = len(SHEET_COLUMNS)
+            end_column = ""
+            while end_column_number:
+                end_column_number, remainder = divmod(end_column_number - 1, 26)
+                end_column = chr(65 + remainder) + end_column
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{name}'!{column_name}1:{end_column}1",
+                valueInputOption="RAW",
+                body={"values": [list(SHEET_COLUMNS[len(current[0]) :])]},
             ).execute()
         elif current[0] != list(SHEET_COLUMNS):
             raise ValueError(f"The {name} worksheet has unexpected column headings.")
@@ -156,7 +180,7 @@ def read_worksheet_rows(worksheet):
         .values()
         .get(
             spreadsheetId=settings.GOOGLE_SHEETS_SPREADSHEET_ID,
-            range=f"'{worksheet}'!A:X",
+            range=f"'{worksheet}'!A:AB",
         )
         .execute()
     )
@@ -220,13 +244,23 @@ def _ticket_row(ticket, synced_at):
         "created_at": _iso(ticket.created_at),
         "updated_at": _iso(ticket.updated_at),
         "last_synced_at": _iso(synced_at),
+        "event_id": str(registration.event_id),
+        "event_name": registration.event.name,
+        "registration_created_at": _iso(registration.created_at),
+        "registration_desk": (
+            registration.created_by.desk
+            if registration.created_by and registration.created_by.desk
+            else "ADMIN"
+            if registration.source == Registration.Source.ON_SPOT
+            else ""
+        ),
     }
     return [values[column] for column in SHEET_COLUMNS]
 
 
 def sync_ticket(ticket_id):
     ticket = (
-        Ticket.objects.select_related("registration__event")
+        Ticket.objects.select_related("registration__event", "registration__created_by")
         .get(pk=ticket_id)
     )
     if (
@@ -265,7 +299,7 @@ def sync_ticket(ticket_id):
     if row_index is None:
         service.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
-            range=f"'{worksheet}'!A:X",
+            range=f"'{worksheet}'!A:AB",
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": [values]},
@@ -273,7 +307,7 @@ def sync_ticket(ticket_id):
     else:
         service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=f"'{worksheet}'!A{row_index}:X{row_index}",
+            range=f"'{worksheet}'!A{row_index}:AB{row_index}",
             valueInputOption="RAW",
             body={"values": [values]},
         ).execute()
@@ -282,7 +316,7 @@ def sync_ticket(ticket_id):
     return True
 
 
-def _claim_next_job():
+def _claim_next_job(ticket_id=None):
     with transaction.atomic():
         stale_cutoff = timezone.now() - timedelta(minutes=10)
         SpreadsheetSyncJob.objects.filter(
@@ -293,25 +327,21 @@ def _claim_next_job():
             last_error=SAFE_SYNC_ERROR,
             next_attempt_at=timezone.now(),
         )
-        job = (
-            SpreadsheetSyncJob.objects.select_for_update()
-            .filter(
-                status=SpreadsheetSyncJob.Status.PENDING,
-                next_attempt_at__isnull=True,
-            )
-            .order_by("created_at")
-            .first()
+        pending_jobs = SpreadsheetSyncJob.objects.select_for_update().filter(
+            status=SpreadsheetSyncJob.Status.PENDING,
+            next_attempt_at__isnull=True,
         )
+        if ticket_id is not None:
+            pending_jobs = pending_jobs.filter(ticket_id=ticket_id)
+        job = pending_jobs.order_by("created_at").first()
         if job is None:
-            job = (
-                SpreadsheetSyncJob.objects.select_for_update()
-                .filter(
-                    status=SpreadsheetSyncJob.Status.FAILED,
-                    next_attempt_at__lte=timezone.now(),
-                )
-                .order_by("created_at")
-                .first()
+            failed_jobs = SpreadsheetSyncJob.objects.select_for_update().filter(
+                status=SpreadsheetSyncJob.Status.FAILED,
+                next_attempt_at__lte=timezone.now(),
             )
+            if ticket_id is not None:
+                failed_jobs = failed_jobs.filter(ticket_id=ticket_id)
+            job = failed_jobs.order_by("created_at").first()
         if job is not None:
             job.status = SpreadsheetSyncJob.Status.PROCESSING
             job.attempts += 1
@@ -320,10 +350,10 @@ def _claim_next_job():
         return job
 
 
-def process_sync_jobs(limit=100):
+def process_sync_jobs(limit=100, ticket_id=None):
     processed = 0
     for _ in range(limit):
-        job = _claim_next_job()
+        job = _claim_next_job(ticket_id=ticket_id)
         if job is None:
             break
         try:

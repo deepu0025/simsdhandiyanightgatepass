@@ -59,7 +59,10 @@ export type TicketRecord = {
   checked_in_at: string | null;
   checkin_method: 'QR' | 'MANUAL' | null;
   eligibility_basis: 'IMPORTED_PAYMENT_STATUS' | 'IMPORTED_EMAIL_SENT' | null;
+  registration_desk: string | null;
 };
+
+export type SheetSyncStatus = 'PENDING' | 'PROCESSING' | 'SUCCEEDED' | 'FAILED' | 'NOT_CONFIGURED';
 
 export type EventRecord = {
   id: string;
@@ -197,6 +200,7 @@ export const api = {
       issued: boolean;
       pdf_url: string | null;
       replayed: boolean;
+      sheet_sync_status: SheetSyncStatus;
     }>('/admin/registrations/on-spot/', {
       method: 'POST',
       headers: { 'Idempotency-Key': idempotencyKey },

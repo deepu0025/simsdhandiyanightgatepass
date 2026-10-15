@@ -99,9 +99,13 @@ def _create_imported_ticket(batch, row):
             "scan_status",
             "checked_in_at",
             "checked_in_by",
+            "registration_desk",
             "email_sent_at",
             "created_at",
             "last_synced_at",
+            "event_id",
+            "event_name",
+            "registration_created_at",
         )
     }
     ticket = Ticket.objects.create(
@@ -150,7 +154,11 @@ def _update_imported_ticket(ticket, row):
         "scan_status": data.get("scan_status", ""),
         "checked_in_at": data.get("checked_in_at", ""),
         "checked_in_by": data.get("checked_in_by", ""),
+        "registration_desk": data.get("registration_desk", ""),
         "last_synced_at": data.get("last_synced_at", ""),
+        "event_id": data.get("event_id", ""),
+        "event_name": data.get("event_name", ""),
+        "registration_created_at": data.get("registration_created_at", ""),
     }
     ticket.save(
         update_fields=(

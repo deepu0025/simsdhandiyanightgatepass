@@ -23,6 +23,7 @@ from .models import (
     Event,
     GoogleSheetImportState,
     ImportBatch,
+    PaymentVerification,
     Registration,
     SpreadsheetSyncJob,
     Ticket,
@@ -38,6 +39,7 @@ from .services import check_in_ticket, issue_ticket, manual_check_in_ticket
 from .sheets_sync import (
     SAFE_SYNC_ERROR,
     SHEET_COLUMNS,
+    _ensure_worksheets,
     _ticket_row,
     process_sync_jobs,
     read_worksheet_rows,
@@ -476,6 +478,36 @@ class TicketOperationsTests(TestCase):
         self.assertEqual(response.status_code, 201)
         registration = Registration.objects.get(pk=response.data["registration_id"])
         self.assertEqual(registration.created_by, desk_user)
+        self.assertEqual(registration.payment_status, Registration.PaymentStatus.VERIFIED)
+        self.assertEqual(registration.imported_payment_status, "VERIFIED")
+        ticket = Ticket.objects.get(pk=response.data["ticket"]["id"])
+        self.assertEqual(ticket.status, Ticket.Status.ISSUED)
+        self.assertIsNotNone(ticket.checked_in_at)
+        self.assertEqual(ticket.checked_in_by, desk_user)
+        self.assertEqual(ticket.registration.imported_verified_by, "desk-one@example.test")
+        self.assertTrue(
+            CheckIn.objects.filter(
+                ticket=ticket,
+                result=CheckIn.Result.ACCEPTED,
+                gate="On-spot DESK 1",
+            ).exists()
+        )
+        self.assertTrue(
+            PaymentVerification.objects.filter(
+                registration=registration,
+                verifier=desk_user,
+                decision=Registration.PaymentStatus.VERIFIED,
+            ).exists()
+        )
+        sheet_row = dict(zip(SHEET_COLUMNS, _ticket_row(ticket, timezone.now())))
+        self.assertEqual(sheet_row["payment_status"], "VERIFIED")
+        self.assertEqual(sheet_row["registration_desk"], "DESK_1")
+        self.assertEqual(sheet_row["verified_by"], desk_user.email)
+        self.assertEqual(sheet_row["event_id"], str(self.event.pk))
+        self.assertEqual(sheet_row["event_name"], self.event.name)
+        self.assertTrue(sheet_row["registration_created_at"])
+        self.assertTrue(sheet_row["ticket_generated_at"])
+        self.assertTrue(sheet_row["checked_in_at"])
 
         other_desk = User.objects.get(email="desk-two@example.test")
         other_client = APIClient()
@@ -625,8 +657,6 @@ class TicketOperationsTests(TestCase):
     def test_on_spot_ticket_pdf_and_scanner_check_in_end_to_end(self):
         admin_client = APIClient()
         admin_client.force_authenticate(self.admin)
-        issued_credentials = []
-
         payload = {
             "event_id": str(self.event.pk),
             "attendee_name": "Gate Guest",
@@ -643,8 +673,11 @@ class TicketOperationsTests(TestCase):
             HTTP_IDEMPOTENCY_KEY="onsite-test-registration-1",
         )
         self.assertEqual(response.status_code, 201)
-        self.assertFalse(response.data["issued"])
-        self.assertEqual(response.data["ticket"]["status"], Ticket.Status.PENDING)
+        self.assertTrue(response.data["issued"])
+        self.assertEqual(response.data["ticket"]["status"], Ticket.Status.ISSUED)
+        self.assertEqual(response.data["ticket"]["payment_status"], "VERIFIED")
+        self.assertEqual(response.data["ticket"]["checkin_method"], CheckIn.Method.MANUAL)
+        self.assertIsNotNone(response.data["ticket"]["checked_in_at"])
 
         replay = admin_client.post(
             "/api/admin/registrations/on-spot/",
@@ -654,6 +687,9 @@ class TicketOperationsTests(TestCase):
         )
         self.assertEqual(replay.status_code, 200)
         self.assertTrue(replay.data["replayed"])
+        self.assertTrue(replay.data["issued"])
+        self.assertEqual(replay.data["ticket"]["status"], Ticket.Status.ISSUED)
+        self.assertIsNotNone(replay.data["ticket"]["checked_in_at"])
         self.assertEqual(Ticket.objects.filter(ticket_number="EVT-ONSPOT-1").count(), 1)
         changed_replay = admin_client.post(
             "/api/admin/registrations/on-spot/",
@@ -662,28 +698,6 @@ class TicketOperationsTests(TestCase):
             HTTP_IDEMPOTENCY_KEY="onsite-test-registration-1",
         )
         self.assertEqual(changed_replay.status_code, 409)
-
-        updated_at = (timezone.now() + timedelta(seconds=1)).isoformat()
-        row = (
-            "ticket_id,ticket_number,ticket_type,name,email,payment_status,verified_by,updated_at\n"
-            f"{response.data['ticket']['id']},EVT-ONSPOT-1,General,Gate Guest,gate-guest@example.test,VERIFIED,admin@example.test,{updated_at}\n"
-        )
-        preview = self._preview_csv(admin_client, row.encode())
-
-        def issue_and_capture(ticket_id, actor=None):
-            ticket, credential = issue_ticket(ticket_id, actor=actor)
-            issued_credentials.append(credential)
-            return ticket, credential
-
-        with patch("operations.import_commit.issue_ticket", side_effect=issue_and_capture):
-            committed = admin_client.post(
-                f"/api/admin/import/{preview.data['batch_id']}/commit/",
-                {"confirm": True},
-                format="json",
-            )
-        self.assertEqual(committed.data["issued"], 1)
-        self.assertEqual(Ticket.objects.filter(ticket_number="EVT-ONSPOT-1").count(), 1)
-        self.assertNotIn("qr_credential", committed.data)
         pdf_url = f"/api/tickets/{response.data['ticket']['id']}/pdf/"
         pdf = admin_client.get(pdf_url)
         self.assertEqual(pdf.status_code, 200)
@@ -692,22 +706,15 @@ class TicketOperationsTests(TestCase):
 
         scanner_client = APIClient()
         scanner_client.force_authenticate(self.scanner)
-        first_scan = scanner_client.post(
+        already_checked_in = scanner_client.post(
             "/api/scanner/scan/",
-            {"credential": issued_credentials[0], "gate": "North"},
+            {"credential": "EVT-ONSPOT-1", "gate": "North"},
             format="json",
         )
-        second_scan = scanner_client.post(
-            "/api/scanner/scan/",
-            {"credential": issued_credentials[0], "gate": "South"},
-            format="json",
-        )
-        self.assertEqual(first_scan.status_code, 200)
-        self.assertEqual(first_scan.data["result"], CheckIn.Result.ACCEPTED)
-        self.assertEqual(second_scan.status_code, 409)
-        self.assertEqual(second_scan.data["result"], CheckIn.Result.ALREADY_USED)
+        self.assertEqual(already_checked_in.status_code, 409)
+        self.assertEqual(already_checked_in.data["result"], CheckIn.Result.ALREADY_USED)
 
-    def test_on_spot_registration_cannot_approve_payment_inside_app(self):
+    def test_on_spot_registration_is_verified_and_checked_in_without_sheet_import(self):
         client = APIClient()
         client.force_authenticate(self.admin)
         response = client.post(
@@ -725,21 +732,51 @@ class TicketOperationsTests(TestCase):
             HTTP_IDEMPOTENCY_KEY="pending-onsite-test",
         )
         self.assertEqual(response.status_code, 201)
-        self.assertFalse(response.data["issued"])
-        ticket_id = response.data["ticket"]["id"]
-        self.assertEqual(
-            client.post(f"/api/admin/tickets/{ticket_id}/issue/").status_code,
-            409,
-        )
+        self.assertTrue(response.data["issued"])
+        self.assertEqual(response.data["ticket"]["status"], Ticket.Status.ISSUED)
+        self.assertEqual(response.data["ticket"]["payment_status"], "VERIFIED")
+        self.assertIsNotNone(response.data["ticket"]["checked_in_at"])
         registration_id = response.data["registration_id"]
-        self.assertEqual(
-            client.post(
-            f"/api/admin/registrations/{registration_id}/payment/",
-            {"decision": "REJECTED"},
-            format="json",
-            ).status_code,
-            404,
+        registration = Registration.objects.get(pk=registration_id)
+        self.assertEqual(registration.payment_status, Registration.PaymentStatus.VERIFIED)
+        self.assertTrue(
+            PaymentVerification.objects.filter(
+                registration=registration,
+                verifier=self.admin,
+                decision=Registration.PaymentStatus.VERIFIED,
+            ).exists()
         )
+
+    @override_settings(
+        GOOGLE_SHEETS_SPREADSHEET_ID="spreadsheet-id",
+        GOOGLE_SERVICE_ACCOUNT_FILE="service-account.json",
+        GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON="",
+    )
+    def test_on_spot_registration_syncs_sheet_row_before_returning(self):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        with patch("operations.sheets_sync.sync_ticket", return_value=True) as sync:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = client.post(
+                    "/api/admin/registrations/on-spot/",
+                    {
+                        "event_id": str(self.event.pk),
+                        "attendee_name": "Sheet Guest",
+                        "attendee_email": "sheet-guest@example.test",
+                        "ticket_type": "General",
+                        "payment_method": "CASH",
+                        "amount": "50.00",
+                    },
+                    format="json",
+                    HTTP_IDEMPOTENCY_KEY="onsite-sheet-sync",
+                )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["sheet_sync_status"], SpreadsheetSyncJob.Status.SUCCEEDED)
+        sync.assert_called_once()
+        self.assertEqual(str(sync.call_args.args[0]), response.data["ticket"]["id"])
+        job = SpreadsheetSyncJob.objects.get(ticket_id=response.data["ticket"]["id"])
+        self.assertEqual(job.status, SpreadsheetSyncJob.Status.SUCCEEDED)
 
     def test_admin_revocation_is_audited_and_blocks_future_scans_and_downloads(self):
         ticket, credential = issue_ticket(self.ticket.pk, self.admin)
@@ -1141,8 +1178,33 @@ class TicketOperationsTests(TestCase):
         append.assert_called_once()
         update.assert_called_once()
         self.assertIn("OnSpot_Tickets", append.call_args.kwargs["range"])
-        self.assertIn("A2:X2", update.call_args.kwargs["range"])
-        self.assertEqual(len(append.call_args.kwargs["body"]["values"][0]), 24)
+        self.assertIn("A2:AB2", update.call_args.kwargs["range"])
+        self.assertEqual(len(append.call_args.kwargs["body"]["values"][0]), 28)
+        self.assertEqual(append.call_args.kwargs["body"]["values"][0][-1], "ADMIN")
+
+    def test_sheets_sync_extends_legacy_headers_with_on_spot_columns(self):
+        service = MagicMock()
+        service.spreadsheets.return_value.get.return_value.execute.return_value = {
+            "sheets": [
+                {"properties": {"title": "Online_Tickets", "sheetId": 1}},
+                {"properties": {"title": "OnSpot_Tickets", "sheetId": 2}},
+            ]
+        }
+        service.spreadsheets.return_value.values.return_value.get.return_value.execute.side_effect = [
+            {"values": [list(SHEET_COLUMNS[:24])]},
+            {"values": [list(SHEET_COLUMNS[:24])]},
+        ]
+
+        _ensure_worksheets(service)
+
+        updates = service.spreadsheets.return_value.values.return_value.update.call_args_list
+        self.assertEqual(len(updates), 2)
+        self.assertEqual(updates[0].kwargs["range"], "'Online_Tickets'!Y1:AB1")
+        self.assertEqual(updates[1].kwargs["range"], "'OnSpot_Tickets'!Y1:AB1")
+        self.assertEqual(
+            updates[1].kwargs["body"]["values"][0],
+            list(SHEET_COLUMNS[24:]),
+        )
 
     @override_settings(
         GOOGLE_SHEETS_SPREADSHEET_ID="spreadsheet-id",
