@@ -1,3 +1,5 @@
+import re
+
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 
@@ -84,15 +86,18 @@ class TicketSerializer(serializers.ModelSerializer):
 
 
 class OnSpotRegistrationSerializer(serializers.Serializer):
+    SINGLE_TICKET = "Single ticket"
+    COMBO_TICKET = "Combo 5+1"
+    TICKET_PRICE = 149
+
     event_id = serializers.UUIDField()
     attendee_name = serializers.CharField(max_length=160)
     attendee_email = serializers.EmailField()
-    attendee_phone = serializers.CharField(max_length=32, required=False, allow_blank=True)
-    ticket_type = serializers.CharField(max_length=120)
-    ticket_number = serializers.CharField(max_length=80, required=False, allow_blank=True)
+    attendee_phone = serializers.CharField(max_length=10, required=False, allow_blank=True)
+    ticket_type = serializers.ChoiceField(choices=(SINGLE_TICKET, COMBO_TICKET))
+    quantity = serializers.IntegerField(min_value=1, max_value=20)
     payment_method = serializers.ChoiceField(choices=("CASH", "CARD", "UPI"))
     transaction_reference = serializers.CharField(max_length=120, required=False, allow_blank=True)
-    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0)
 
     def validate_event_id(self, value):
         try:
@@ -101,9 +106,28 @@ class OnSpotRegistrationSerializer(serializers.Serializer):
             raise serializers.ValidationError("Select an active event.") from error
         return value
 
+    def validate_attendee_email(self, value):
+        _, separator, domain = value.rpartition("@")
+        labels = domain.split(".")
+        if not separator or len(labels) < 2 or any(not label for label in labels):
+            raise serializers.ValidationError("Enter a valid email address with a domain, such as name@example.com.")
+        top_level_domain = labels[-1]
+        if len(top_level_domain) < 2 or not re.search(r"[A-Za-z]", top_level_domain):
+            raise serializers.ValidationError("Enter a valid email address with a complete domain.")
+        return value
+
+    def validate_attendee_phone(self, value):
+        if value and not re.fullmatch(r"[6-9][0-9]{9}", value):
+            raise serializers.ValidationError("Enter a valid 10-digit Indian mobile number.")
+        return value
+
     def validate(self, attrs):
         if attrs["payment_method"] == "UPI" and not attrs.get("transaction_reference"):
             raise serializers.ValidationError({"transaction_reference": "Enter the UPI transaction reference."})
+        package_size = 6 if attrs["ticket_type"] == self.COMBO_TICKET else 1
+        paid_ticket_count = 5 if package_size == 6 else 1
+        attrs["ticket_count"] = attrs["quantity"] * package_size
+        attrs["amount"] = attrs["quantity"] * paid_ticket_count * self.TICKET_PRICE
         return attrs
 
 

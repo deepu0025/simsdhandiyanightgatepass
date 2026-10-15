@@ -3,9 +3,17 @@ import { CheckCircle2, LogOut, UserPlus } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api, type EventRecord, type SheetSyncStatus, type TicketRecord, type User } from '../api';
 
+const SINGLE_TICKET_PRICE = 149;
+const MAX_TICKET_QUANTITY = 20;
+type TicketOption = 'Single ticket' | 'Combo 5+1';
+
 type CreatedResult = {
   registration_id: string;
   ticket: TicketRecord;
+  tickets: TicketRecord[];
+  quantity: number;
+  ticket_count: number;
+  amount: string;
   issued: boolean;
   pdf_url: string | null;
   replayed: boolean;
@@ -15,11 +23,16 @@ type CreatedResult = {
 export default function OnSpotPage({ user, onSignOut }: { user?: User; onSignOut?: () => void } = {}) {
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [eventId, setEventId] = useState('');
+  const [ticketOption, setTicketOption] = useState<TicketOption>('Single ticket');
+  const [quantity, setQuantity] = useState(1);
+  const [attendeePhone, setAttendeePhone] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'CARD' | 'UPI'>('CASH');
   const [result, setResult] = useState<CreatedResult | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const idempotencyKey = useRef('');
+  const ticketCount = quantity * (ticketOption === 'Combo 5+1' ? 6 : 1);
+  const totalAmount = quantity * (ticketOption === 'Combo 5+1' ? 5 : 1) * SINGLE_TICKET_PRICE;
 
   useEffect(() => {
     api.events().then((items) => {
@@ -41,8 +54,8 @@ export default function OnSpotPage({ user, onSignOut }: { user?: User; onSignOut
         attendee_name: String(form.get('attendee_name') || '').trim(),
         attendee_email: String(form.get('attendee_email') || '').trim(),
         attendee_phone: String(form.get('attendee_phone') || '').trim(),
-        ticket_type: String(form.get('ticket_type') || '').trim(),
-        amount: String(form.get('amount') || ''),
+        ticket_type: ticketOption,
+        quantity,
         payment_method: paymentMethod,
         transaction_reference: String(form.get('transaction_reference') || '').trim(),
       }, idempotencyKey.current);
@@ -59,6 +72,9 @@ export default function OnSpotPage({ user, onSignOut }: { user?: User; onSignOut
     setResult(null);
     setError('');
     idempotencyKey.current = '';
+    setAttendeePhone('');
+    setTicketOption('Single ticket');
+    setQuantity(1);
     (document.getElementById('onspot-form') as HTMLFormElement | null)?.reset();
   }
 
@@ -88,10 +104,26 @@ export default function OnSpotPage({ user, onSignOut }: { user?: User; onSignOut
         </label>
         <div className="mt-5 grid gap-5 sm:grid-cols-2">
           <label className="text-sm font-medium text-slate-700">Attendee name<input required name="attendee_name" maxLength={160} className="field mt-2" autoComplete="name" /></label>
-          <label className="text-sm font-medium text-slate-700">Email<input required type="email" name="attendee_email" className="field mt-2" autoComplete="email" /></label>
-          <label className="text-sm font-medium text-slate-700">Phone<input name="attendee_phone" maxLength={32} className="field mt-2" autoComplete="tel" /></label>
-          <label className="text-sm font-medium text-slate-700">Ticket type<input required name="ticket_type" maxLength={120} className="field mt-2" placeholder="General admission" /></label>
-          <label className="text-sm font-medium text-slate-700">Amount<input required name="amount" type="number" min="0" step="0.01" className="field mt-2" placeholder="0.00" /></label>
+          <label className="text-sm font-medium text-slate-700">Email<input required type="email" name="attendee_email" maxLength={254} pattern="[^ @]+@[^ @]+[.][^ @]{2,}" title="Enter a valid email address, such as name@example.com." className="field mt-2" autoComplete="email" /></label>
+          <label className="text-sm font-medium text-slate-700">Phone<input name="attendee_phone" type="tel" inputMode="numeric" maxLength={10} minLength={10} pattern="[6-9][0-9]{9}" title="Enter a 10-digit Indian mobile number starting with 6, 7, 8, or 9." value={attendeePhone} onChange={(event) => setAttendeePhone(event.target.value.replace(/\D/g, '').slice(0, 10))} className="field mt-2" autoComplete="tel" /></label>
+          <label className="text-sm font-medium text-slate-700">Ticket option
+            <select name="ticket_type" value={ticketOption} onChange={(event) => setTicketOption(event.target.value as TicketOption)} className="field mt-2">
+              <option value="Single ticket">Single ticket · ₹149</option>
+              <option value="Combo 5+1">Combo 5+1 · 6 tickets for ₹745</option>
+            </select>
+          </label>
+          <div>
+            <span className="block text-sm font-medium text-slate-700">Quantity</span>
+            <div className="mt-2 flex h-[46px] items-center justify-between rounded-xl border border-slate-200 px-2">
+              <button type="button" aria-label="Decrease quantity" disabled={quantity <= 1} onClick={() => setQuantity((current) => Math.max(1, current - 1))} className="grid h-9 w-9 place-items-center rounded-lg bg-slate-100 text-xl font-semibold text-ink disabled:opacity-40">−</button>
+              <span aria-live="polite" className="font-semibold text-ink">{quantity}</span>
+              <button type="button" aria-label="Increase quantity" disabled={quantity >= MAX_TICKET_QUANTITY} onClick={() => setQuantity((current) => Math.min(MAX_TICKET_QUANTITY, current + 1))} className="grid h-9 w-9 place-items-center rounded-lg bg-slate-100 text-xl font-semibold text-ink disabled:opacity-40">+</button>
+            </div>
+          </div>
+          <div className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900">
+            <p className="font-semibold">Total: ₹{totalAmount.toLocaleString('en-IN')}</p>
+            <p className="mt-1">{ticketCount} {ticketCount === 1 ? 'ticket' : 'tickets'}{ticketOption === 'Combo 5+1' ? ' · Buy 5, get 1 free' : ''} · ₹{SINGLE_TICKET_PRICE} per paid ticket</p>
+          </div>
           <label className="text-sm font-medium text-slate-700">Payment method
             <select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as 'CASH' | 'CARD' | 'UPI')} className="field mt-2">
               <option value="CASH">Cash</option><option value="CARD">Card</option><option value="UPI">UPI</option>
@@ -99,7 +131,7 @@ export default function OnSpotPage({ user, onSignOut }: { user?: User; onSignOut
           </label>
           {(paymentMethod === 'UPI' || paymentMethod === 'CARD') && <label className="text-sm font-medium text-slate-700 sm:col-span-2">Transaction reference {paymentMethod === 'UPI' && <span className="text-red-600">*</span>}<input required={paymentMethod === 'UPI'} name="transaction_reference" maxLength={120} className="field mt-2" /></label>}
         </div>
-        <p className="mt-6 rounded-xl bg-amber-50 p-4 text-sm leading-relaxed text-amber-900">Confirm that payment has been received before saving. This marks payment verified, issues the ticket, and checks the attendee in at this desk. The payment method, transaction reference, desk, and timestamps are recorded for the spreadsheet.</p>
+        <p className="mt-6 rounded-xl bg-amber-50 p-4 text-sm leading-relaxed text-amber-900">The entered attendee name and email will be used for every ticket in this order. Confirm the total payment of ₹{totalAmount.toLocaleString('en-IN')} before saving. Saving verifies payment, issues {ticketCount} {ticketCount === 1 ? 'ticket' : 'tickets'}, and checks them in at this desk.</p>
         {error && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-700">{error}</p>}
         <button disabled={busy || !eventId} className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-5 py-3.5 font-semibold text-white hover:bg-ink disabled:opacity-50"><UserPlus size={18} />{busy ? 'Saving registration…' : 'Save registration'}</button>
       </form>}
@@ -107,9 +139,9 @@ export default function OnSpotPage({ user, onSignOut }: { user?: User; onSignOut
       {result && <section className="mt-8 rounded-2xl border border-slate-200/80 bg-white p-6 sm:p-8">
         <div className={`flex items-start gap-3 rounded-xl p-4 ${result.issued ? 'bg-emerald-50 text-emerald-900' : 'bg-amber-50 text-amber-900'}`}>
           <CheckCircle2 size={21} className="mt-0.5 shrink-0" />
-          <div><h2 className="font-semibold">{result.ticket.checked_in_at ? 'Payment verified — attendee checked in' : result.issued ? 'Ticket issued' : 'Registration saved'}</h2><p className="mt-1 text-sm">{result.ticket.checked_in_at ? `Checked in at ${new Date(result.ticket.checked_in_at).toLocaleString()}${result.ticket.registration_desk ? ` · ${result.ticket.registration_desk.replace('_', ' ')}` : ''}.` : 'The ticket is ready.'} {result.sheet_sync_status === 'SUCCEEDED' ? 'All registration and check-in details were saved to the OnSpot_Tickets sheet.' : result.sheet_sync_status === 'NOT_CONFIGURED' ? 'Google Sheets is not configured; this registration is saved in Gatehouse only.' : result.sheet_sync_status === 'FAILED' ? 'Sheet sync failed; this registration is saved in Gatehouse. Check the Sheets connection and sync status.' : 'Registration details are queued for the OnSpot_Tickets sheet.'}</p></div>
+          <div><h2 className="font-semibold">{result.ticket.checked_in_at ? 'Payment verified — attendee checked in' : result.issued ? 'Ticket issued' : 'Registration saved'}</h2><p className="mt-1 text-sm">{result.ticket_count} {result.ticket_count === 1 ? 'ticket' : 'tickets'} · {result.quantity} {result.quantity === 1 ? 'package' : 'packages'} · ₹{Number(result.amount).toLocaleString('en-IN')}. {result.ticket.checked_in_at ? `Checked in at ${new Date(result.ticket.checked_in_at).toLocaleString()}${result.ticket.registration_desk ? ` · ${result.ticket.registration_desk.replace('_', ' ')}` : ''}.` : 'The ticket is ready.'} {result.sheet_sync_status === 'SUCCEEDED' ? 'All registration and check-in details were saved to the OnSpot_Tickets sheet.' : result.sheet_sync_status === 'NOT_CONFIGURED' ? 'Google Sheets is not configured; this registration is saved in Gatehouse only.' : result.sheet_sync_status === 'FAILED' ? 'Sheet sync failed; this registration is saved in Gatehouse. Check the Sheets connection and sync status.' : 'Registration details are queued for the OnSpot_Tickets sheet.'}</p></div>
         </div>
-        <dl className="mt-6 grid gap-x-8 gap-y-4 sm:grid-cols-2"><div><dt className="text-xs uppercase tracking-wide text-slate-500">Ticket</dt><dd className="mt-1 font-semibold text-ink">{result.ticket.ticket_number}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Ticket ID · use as sheet ticket_id</dt><dd className="mt-1 break-all font-mono text-xs text-ink">{result.ticket.id}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Attendee</dt><dd className="mt-1 font-semibold text-ink">{result.ticket.attendee_name}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Email</dt><dd className="mt-1 text-ink">{result.ticket.attendee_email}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Ticket state · payment</dt><dd className="mt-1 text-ink">{result.ticket.status} · {result.ticket.payment_status}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Check-in time · desk</dt><dd className="mt-1 text-ink">{result.ticket.checked_in_at ? new Date(result.ticket.checked_in_at).toLocaleString() : '—'} · {result.ticket.registration_desk?.replace('_', ' ') || '—'}</dd></div></dl>
+        <dl className="mt-6 grid gap-x-8 gap-y-4 sm:grid-cols-2"><div><dt className="text-xs uppercase tracking-wide text-slate-500">Order</dt><dd className="mt-1 font-semibold text-ink">{result.ticket_count} tickets · ₹{Number(result.amount).toLocaleString('en-IN')}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Ticket numbers</dt><dd className="mt-1 break-words font-mono text-xs text-ink">{result.tickets.map((item) => item.ticket_number).join(', ')}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Attendee</dt><dd className="mt-1 font-semibold text-ink">{result.ticket.attendee_name}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Email</dt><dd className="mt-1 text-ink">{result.ticket.attendee_email}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Ticket state · payment</dt><dd className="mt-1 text-ink">{result.ticket.status} · {result.ticket.payment_status}</dd></div><div><dt className="text-xs uppercase tracking-wide text-slate-500">Check-in time · desk</dt><dd className="mt-1 text-ink">{result.ticket.checked_in_at ? new Date(result.ticket.checked_in_at).toLocaleString() : '—'} · {result.ticket.registration_desk?.replace('_', ' ') || '—'}</dd></div></dl>
         {error && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-700">{error}</p>}
         <div className="mt-6 flex flex-wrap gap-3">
           <button onClick={startNext} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700">New registration</button>

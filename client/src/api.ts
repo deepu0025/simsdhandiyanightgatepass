@@ -189,14 +189,18 @@ export const api = {
     attendee_name: string;
     attendee_email: string;
     attendee_phone: string;
-    ticket_type: string;
-    amount: string;
+    ticket_type: 'Single ticket' | 'Combo 5+1';
+    quantity: number;
     payment_method: 'CASH' | 'CARD' | 'UPI';
     transaction_reference: string;
   }, idempotencyKey: string) =>
     request<{
       registration_id: string;
       ticket: TicketRecord;
+      tickets: TicketRecord[];
+      quantity: number;
+      ticket_count: number;
+      amount: string;
       issued: boolean;
       pdf_url: string | null;
       replayed: boolean;

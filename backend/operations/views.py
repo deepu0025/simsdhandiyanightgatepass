@@ -276,7 +276,8 @@ class OnSpotRegistrationView(APIView):
                     {"detail": "This registration request belongs to another desk account."},
                     status=status.HTTP_409_CONFLICT,
                 )
-            ticket = existing.tickets.first()
+            tickets = list(existing.tickets.order_by("ticket_number"))
+            ticket = tickets[0] if tickets else None
             same_request = (
                 existing.event_id == data["event_id"]
                 and existing.buyer_name == data["attendee_name"]
@@ -285,16 +286,8 @@ class OnSpotRegistrationView(APIView):
                 and existing.order_total == data["amount"]
                 and existing.payment_method == data["payment_method"]
                 and existing.transaction_id == data.get("transaction_reference", "")
-                and (
-                    not ticket
-                    or (
-                        ticket.ticket_type == data["ticket_type"]
-                        and (
-                            not data.get("ticket_number")
-                            or ticket.ticket_number == data["ticket_number"]
-                        )
-                    )
-                )
+                and len(tickets) == data["ticket_count"]
+                and all(item.ticket_type == data["ticket_type"] for item in tickets)
             )
             if not same_request:
                 return Response(
@@ -303,28 +296,19 @@ class OnSpotRegistrationView(APIView):
                 )
             if not ticket:
                 return Response({"detail": "Registration is being processed; retry shortly."}, status=202)
-            sync_job = ticket.sync_jobs.order_by("-created_at").first()
+            sync_jobs = [item.sync_jobs.order_by("-created_at").first() for item in tickets]
             return Response({
                 "registration_id": str(existing.pk),
                 "ticket": TicketSerializer(ticket).data,
+                "tickets": TicketSerializer(tickets, many=True).data,
+                "quantity": data["quantity"],
+                "ticket_count": len(tickets),
+                "amount": str(existing.order_total),
                 "issued": ticket.status == Ticket.Status.ISSUED,
                 "pdf_url": f"/api/tickets/{ticket.pk}/pdf/" if ticket.pdf else None,
                 "replayed": True,
-                "sheet_sync_status": (
-                    sync_job.status
-                    if sync_job
-                    else "NOT_CONFIGURED"
-                    if not sheets_configured()
-                    else "PENDING"
-                ),
+                "sheet_sync_status": _combined_sheet_sync_status(sync_jobs),
             })
-        if data.get("ticket_number") and Ticket.objects.filter(
-            ticket_number=data["ticket_number"]
-        ).exists():
-            return Response(
-                {"detail": "This ticket number is already in use."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         try:
             with transaction.atomic():
                 verified_at = timezone.now()
@@ -359,45 +343,54 @@ class OnSpotRegistrationView(APIView):
                     status=status.HTTP_409_CONFLICT,
                 )
             raise
-        ticket_number = data.get("ticket_number") or f"EVT-{registration.pk.hex[:12].upper()}"
-        ticket = Ticket.objects.create(
-            ticket_number=ticket_number,
-            registration=registration,
-            ticket_type=data["ticket_type"],
-            attendee_name=data["attendee_name"],
-            attendee_email=data["attendee_email"],
-            attendee_phone=data.get("attendee_phone", ""),
-        )
-        ticket, _credential = issue_ticket(ticket.pk, actor=request.user)
-        checked_in_at = timezone.now()
+        tickets = []
+        ticket_number_prefix = f"EVT-{registration.pk.hex[:12].upper()}"
         desk_name = request.user.desk.replace("_", " ") if request.user.desk else "ADMIN"
-        ticket.checked_in_at = checked_in_at
-        ticket.checked_in_by = request.user
-        ticket.save(update_fields=("checked_in_at", "checked_in_by", "updated_at"))
-        CheckIn.objects.create(
-            ticket=ticket,
-            scanner=request.user,
-            gate=f"On-spot {desk_name}",
-            result=CheckIn.Result.ACCEPTED,
-            method=CheckIn.Method.MANUAL,
-            reason="Payment verified and attendee admitted at on-spot registration.",
-        )
-        AuditLog.objects.create(
-            actor=request.user,
-            action="ON_SPOT_REGISTRATION_CHECKED_IN",
-            object_type="Ticket",
-            object_id=str(ticket.pk),
-            details={
-                "registration_id": str(registration.pk),
-                "desk": request.user.desk,
-                "payment_status": Registration.PaymentStatus.VERIFIED,
-                "checked_in_at": checked_in_at.isoformat(),
-            },
-        )
+        for index in range(data["ticket_count"]):
+            suffix = f"-{index + 1:02d}" if index else ""
+            ticket = Ticket.objects.create(
+                ticket_number=f"{ticket_number_prefix}{suffix}",
+                registration=registration,
+                ticket_type=data["ticket_type"],
+                attendee_name=data["attendee_name"],
+                attendee_email=data["attendee_email"],
+                attendee_phone=data.get("attendee_phone", ""),
+            )
+            ticket, _credential = issue_ticket(ticket.pk, actor=request.user)
+            checked_in_at = timezone.now()
+            ticket.checked_in_at = checked_in_at
+            ticket.checked_in_by = request.user
+            ticket.save(update_fields=("checked_in_at", "checked_in_by", "updated_at"))
+            CheckIn.objects.create(
+                ticket=ticket,
+                scanner=request.user,
+                gate=f"On-spot {desk_name}",
+                result=CheckIn.Result.ACCEPTED,
+                method=CheckIn.Method.MANUAL,
+                reason="Payment verified and attendee admitted at on-spot registration.",
+            )
+            AuditLog.objects.create(
+                actor=request.user,
+                action="ON_SPOT_REGISTRATION_CHECKED_IN",
+                object_type="Ticket",
+                object_id=str(ticket.pk),
+                details={
+                    "registration_id": str(registration.pk),
+                    "desk": request.user.desk,
+                    "payment_status": Registration.PaymentStatus.VERIFIED,
+                    "checked_in_at": checked_in_at.isoformat(),
+                },
+            )
+            tickets.append(ticket)
+        ticket = tickets[0]
         response = Response(
             {
                 "registration_id": str(registration.pk),
                 "ticket": TicketSerializer(ticket).data,
+                "tickets": TicketSerializer(tickets, many=True).data,
+                "quantity": data["quantity"],
+                "ticket_count": len(tickets),
+                "amount": str(registration.order_total),
                 "issued": True,
                 "pdf_url": f"/api/tickets/{ticket.pk}/pdf/" if ticket.pdf else None,
                 "replayed": False,
@@ -410,12 +403,24 @@ class OnSpotRegistrationView(APIView):
             if not sheets_configured():
                 response.data["sheet_sync_status"] = "NOT_CONFIGURED"
                 return
-            process_sync_jobs(limit=1, ticket_id=ticket.pk)
-            sync_job = ticket.sync_jobs.order_by("-created_at").first()
-            response.data["sheet_sync_status"] = sync_job.status if sync_job else "PENDING"
+            for item in tickets:
+                process_sync_jobs(limit=1, ticket_id=item.pk)
+            sync_jobs = [item.sync_jobs.order_by("-created_at").first() for item in tickets]
+            response.data["sheet_sync_status"] = _combined_sheet_sync_status(sync_jobs)
 
         transaction.on_commit(sync_on_spot_ticket, robust=True)
         return response
+
+
+def _combined_sheet_sync_status(sync_jobs):
+    statuses = [job.status for job in sync_jobs if job]
+    if any(value == SpreadsheetSyncJob.Status.FAILED for value in statuses):
+        return SpreadsheetSyncJob.Status.FAILED
+    if statuses and all(value == SpreadsheetSyncJob.Status.SUCCEEDED for value in statuses):
+        return SpreadsheetSyncJob.Status.SUCCEEDED
+    if not sheets_configured():
+        return "NOT_CONFIGURED"
+    return SpreadsheetSyncJob.Status.PENDING
 
 class IssueTicketView(APIView):
     permission_classes = [IsAdmin]

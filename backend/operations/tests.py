@@ -468,9 +468,9 @@ class TicketOperationsTests(TestCase):
                 "event_id": str(self.event.pk),
                 "attendee_name": "Desk Guest",
                 "attendee_email": "desk-guest@example.test",
-                "ticket_type": "General",
+                "ticket_type": "Single ticket",
+                "quantity": 1,
                 "payment_method": "CASH",
-                "amount": "100.00",
             },
             format="json",
             HTTP_IDEMPOTENCY_KEY="desk-one-registration-1",
@@ -518,9 +518,9 @@ class TicketOperationsTests(TestCase):
                 "event_id": str(self.event.pk),
                 "attendee_name": "Desk Guest",
                 "attendee_email": "desk-guest@example.test",
-                "ticket_type": "General",
+                "ticket_type": "Single ticket",
+                "quantity": 1,
                 "payment_method": "CASH",
-                "amount": "100.00",
             },
             format="json",
             HTTP_IDEMPOTENCY_KEY="desk-one-registration-1",
@@ -661,10 +661,9 @@ class TicketOperationsTests(TestCase):
             "event_id": str(self.event.pk),
             "attendee_name": "Gate Guest",
             "attendee_email": "gate-guest@example.test",
-            "ticket_type": "General",
-            "ticket_number": "EVT-ONSPOT-1",
+            "ticket_type": "Single ticket",
+            "quantity": 1,
             "payment_method": "CASH",
-            "amount": "250.00",
         }
         response = admin_client.post(
             "/api/admin/registrations/on-spot/",
@@ -690,10 +689,10 @@ class TicketOperationsTests(TestCase):
         self.assertTrue(replay.data["issued"])
         self.assertEqual(replay.data["ticket"]["status"], Ticket.Status.ISSUED)
         self.assertIsNotNone(replay.data["ticket"]["checked_in_at"])
-        self.assertEqual(Ticket.objects.filter(ticket_number="EVT-ONSPOT-1").count(), 1)
+        self.assertEqual(Ticket.objects.filter(registration_id=response.data["registration_id"]).count(), 1)
         changed_replay = admin_client.post(
             "/api/admin/registrations/on-spot/",
-            {**payload, "amount": "251.00"},
+            {**payload, "quantity": 2},
             format="json",
             HTTP_IDEMPOTENCY_KEY="onsite-test-registration-1",
         )
@@ -708,7 +707,7 @@ class TicketOperationsTests(TestCase):
         scanner_client.force_authenticate(self.scanner)
         already_checked_in = scanner_client.post(
             "/api/scanner/scan/",
-            {"credential": "EVT-ONSPOT-1", "gate": "North"},
+            {"credential": response.data["ticket"]["ticket_number"], "gate": "North"},
             format="json",
         )
         self.assertEqual(already_checked_in.status_code, 409)
@@ -723,10 +722,10 @@ class TicketOperationsTests(TestCase):
                 "event_id": str(self.event.pk),
                 "attendee_name": "Pending Guest",
                 "attendee_email": "pending@example.test",
-                "ticket_type": "General",
+                "ticket_type": "Single ticket",
+                "quantity": 1,
                 "payment_method": "CASH",
                 "payment_confirmed": True,
-                "amount": "250.00",
             },
             format="json",
             HTTP_IDEMPOTENCY_KEY="pending-onsite-test",
@@ -747,6 +746,86 @@ class TicketOperationsTests(TestCase):
             ).exists()
         )
 
+    def test_on_spot_combo_calculates_price_and_issues_six_checked_in_tickets(self):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        response = client.post(
+            "/api/admin/registrations/on-spot/",
+            {
+                "event_id": str(self.event.pk),
+                "attendee_name": "Combo Guest",
+                "attendee_email": "combo@example.com",
+                "attendee_phone": "9876543210",
+                "ticket_type": "Combo 5+1",
+                "quantity": 1,
+                "payment_method": "CASH",
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="combo-six-tickets",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["quantity"], 1)
+        self.assertEqual(response.data["ticket_count"], 6)
+        self.assertEqual(response.data["amount"], "745")
+        tickets = Ticket.objects.filter(registration_id=response.data["registration_id"])
+        self.assertEqual(tickets.count(), 6)
+        self.assertEqual(tickets.values("ticket_number").distinct().count(), 6)
+        self.assertEqual(tickets.filter(status=Ticket.Status.ISSUED).count(), 6)
+        self.assertEqual(tickets.filter(checked_in_at__isnull=False).count(), 6)
+        self.assertEqual(
+            CheckIn.objects.filter(
+                ticket__in=tickets,
+                result=CheckIn.Result.ACCEPTED,
+                method=CheckIn.Method.MANUAL,
+            ).count(),
+            6,
+        )
+        self.assertEqual(
+            Registration.objects.get(pk=response.data["registration_id"]).order_total,
+            Decimal("745"),
+        )
+
+    def test_on_spot_registration_validates_indian_mobile_and_email_domain(self):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        payload = {
+            "event_id": str(self.event.pk),
+            "attendee_name": "Validation Guest",
+            "attendee_email": "validation@example.com",
+            "attendee_phone": "9876543210",
+            "ticket_type": "Single ticket",
+            "quantity": 1,
+            "payment_method": "CASH",
+        }
+        valid = client.post(
+            "/api/admin/registrations/on-spot/",
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="onsite-valid-contact",
+        )
+        self.assertEqual(valid.status_code, 201)
+
+        for phone in ("987654321", "98765432101", "1234567890", "98765abc10"):
+            with self.subTest(phone=phone):
+                response = client.post(
+                    "/api/admin/registrations/on-spot/",
+                    {**payload, "attendee_phone": phone},
+                    format="json",
+                    HTTP_IDEMPOTENCY_KEY=f"onsite-invalid-phone-{phone}",
+                )
+                self.assertEqual(response.status_code, 400)
+
+        for email in ("validation@localhost", "missing-domain.example.com", "no-tld@example"):
+            with self.subTest(email=email):
+                response = client.post(
+                    "/api/admin/registrations/on-spot/",
+                    {**payload, "attendee_email": email},
+                    format="json",
+                    HTTP_IDEMPOTENCY_KEY=f"onsite-invalid-email-{email}",
+                )
+                self.assertEqual(response.status_code, 400)
+
     @override_settings(
         GOOGLE_SHEETS_SPREADSHEET_ID="spreadsheet-id",
         GOOGLE_SERVICE_ACCOUNT_FILE="service-account.json",
@@ -763,9 +842,9 @@ class TicketOperationsTests(TestCase):
                         "event_id": str(self.event.pk),
                         "attendee_name": "Sheet Guest",
                         "attendee_email": "sheet-guest@example.test",
-                        "ticket_type": "General",
+                        "ticket_type": "Single ticket",
+                        "quantity": 1,
                         "payment_method": "CASH",
-                        "amount": "50.00",
                     },
                     format="json",
                     HTTP_IDEMPOTENCY_KEY="onsite-sheet-sync",
