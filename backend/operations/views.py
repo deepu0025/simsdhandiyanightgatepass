@@ -1,11 +1,12 @@
 import csv
 import io
 import logging
+from uuid import UUID
 
 from django.contrib.auth import login, logout
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import DatabaseError, IntegrityError, connection, transaction
-from django.db.models import Prefetch, Q
+from django.db.models import Count, Max, Prefetch, Q, Sum
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.middleware.csrf import get_token
 from django.utils import timezone
@@ -50,6 +51,7 @@ from .services import (
     check_in_ticket,
     issue_ticket,
     manual_check_in_ticket,
+    next_offline_ticket_number,
     validate_ticket_credential,
 )
 from .sheets_sync import (
@@ -142,6 +144,100 @@ class DashboardView(APIView):
         })
 
 
+class StaffActivityDashboardView(APIView):
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        scanners = []
+        for scanner in User.objects.filter(role=User.Role.SCANNER).order_by("gate", "name"):
+            scan_totals = CheckIn.objects.filter(scanner=scanner).aggregate(
+                scans=Count("id"),
+                accepted=Count("id", filter=Q(result=CheckIn.Result.ACCEPTED)),
+                failed=Count("id", filter=~Q(result=CheckIn.Result.ACCEPTED)),
+                last_scan_at=Max("scanned_at"),
+            )
+            scanners.append({
+                "id": scanner.pk,
+                "name": scanner.name,
+                "email": scanner.email,
+                "gate": scanner.gate,
+                "is_active": scanner.is_active,
+                **scan_totals,
+            })
+
+        desks = []
+        for desk in User.objects.filter(role=User.Role.DESK).order_by("desk", "name"):
+            registrations = Registration.objects.filter(
+                created_by=desk,
+                source=Registration.Source.ON_SPOT,
+            )
+            sales = registrations.aggregate(
+                orders=Count("id"),
+                total=Sum("order_total"),
+                cash_orders=Count("id", filter=Q(payment_method="CASH")),
+                cash_total=Sum("order_total", filter=Q(payment_method="CASH")),
+                upi_orders=Count("id", filter=Q(payment_method="UPI")),
+                upi_total=Sum("order_total", filter=Q(payment_method="UPI")),
+                card_orders=Count("id", filter=Q(payment_method="CARD")),
+                card_total=Sum("order_total", filter=Q(payment_method="CARD")),
+            )
+            desks.append({
+                "id": desk.pk,
+                "name": desk.name,
+                "email": desk.email,
+                "desk": desk.desk,
+                "is_active": desk.is_active,
+                "tickets_sold": Ticket.objects.filter(registration__in=registrations).count(),
+                **{
+                    key: (str(value) if key.endswith("_total") or key == "total" else value)
+                    for key, value in sales.items()
+                },
+            })
+
+        recent_scans = [
+            {
+                "id": str(scan.pk),
+                "scanner_name": scan.scanner.name if scan.scanner else "",
+                "scanner_gate": scan.scanner.gate if scan.scanner else "",
+                "scanned_at": scan.scanned_at,
+                "result": scan.result,
+                "method": scan.method,
+                "gate": scan.gate,
+                "ticket_number": scan.ticket.ticket_number if scan.ticket else None,
+                "attendee_name": scan.ticket.attendee_name if scan.ticket else None,
+                "reason": scan.reason,
+            }
+            for scan in CheckIn.objects.filter(scanner__role=User.Role.SCANNER)
+            .select_related("scanner", "ticket")
+            .order_by("-scanned_at")[:100]
+        ]
+        recent_sales = [
+            {
+                "id": str(registration.pk),
+                "desk_name": registration.created_by.name if registration.created_by else "",
+                "desk": registration.created_by.desk if registration.created_by else "",
+                "attendee_name": registration.buyer_name,
+                "payment_method": registration.payment_method,
+                "amount": str(registration.order_total or 0),
+                "ticket_count": registration.ticket_count,
+                "created_at": registration.created_at,
+            }
+            for registration in Registration.objects.filter(
+                source=Registration.Source.ON_SPOT,
+                created_by__role=User.Role.DESK,
+            )
+            .select_related("created_by")
+            .annotate(ticket_count=Count("tickets"))
+            .order_by("-created_at")[:100]
+        ]
+        return Response({
+            "scanners": scanners,
+            "desks": desks,
+            "recent_scans": recent_scans,
+            "recent_sales": recent_sales,
+        })
+
+
 class EventListView(APIView):
     permission_classes = [IsAdminOrRegistrationDesk]
 
@@ -201,13 +297,19 @@ class TicketListView(APIView):
         )
         query = request.query_params.get("q", "").strip()
         if query:
-            tickets = tickets.filter(
+            search = (
                 Q(ticket_number__icontains=query)
                 | Q(attendee_name__icontains=query)
                 | Q(attendee_email__icontains=query)
-                | Q(registration_id__icontains=query)
                 | Q(registration__transaction_id__icontains=query)
             )
+            try:
+                registration_id = UUID(query)
+            except ValueError:
+                pass
+            else:
+                search |= Q(registration_id=registration_id)
+            tickets = tickets.filter(search)
         for param, field in (
             ("status", "status"),
             ("payment_status", "registration__payment_status"),
@@ -287,6 +389,7 @@ class OnSpotRegistrationView(APIView):
                 and existing.payment_method == data["payment_method"]
                 and existing.transaction_id == data.get("transaction_reference", "")
                 and len(tickets) == data["ticket_count"]
+                and [item.attendee_name for item in tickets] == data["attendee_names"]
                 and all(item.ticket_type == data["ticket_type"] for item in tickets)
             )
             if not same_request:
@@ -344,15 +447,13 @@ class OnSpotRegistrationView(APIView):
                 )
             raise
         tickets = []
-        ticket_number_prefix = f"EVT-{registration.pk.hex[:12].upper()}"
         desk_name = request.user.desk.replace("_", " ") if request.user.desk else "ADMIN"
         for index in range(data["ticket_count"]):
-            suffix = f"-{index + 1:02d}" if index else ""
             ticket = Ticket.objects.create(
-                ticket_number=f"{ticket_number_prefix}{suffix}",
+                ticket_number=next_offline_ticket_number(),
                 registration=registration,
                 ticket_type=data["ticket_type"],
-                attendee_name=data["attendee_name"],
+                attendee_name=data["attendee_names"][index],
                 attendee_email=data["attendee_email"],
                 attendee_phone=data.get("attendee_phone", ""),
             )
@@ -410,6 +511,77 @@ class OnSpotRegistrationView(APIView):
 
         transaction.on_commit(sync_on_spot_ticket, robust=True)
         return response
+
+
+class DeskHistoryView(APIView):
+    permission_classes = [IsAdminOrRegistrationDesk]
+
+    def get(self, request):
+        registrations = Registration.objects.filter(source=Registration.Source.ON_SPOT)
+        if request.user.role == User.Role.DESK:
+            registrations = registrations.filter(created_by=request.user)
+        else:
+            desk_id = request.query_params.get("desk_id")
+            if desk_id:
+                registrations = registrations.filter(
+                    created_by_id=desk_id,
+                    created_by__role=User.Role.DESK,
+                )
+
+        page = max(1, int(request.query_params.get("page", 1)))
+        page_size = min(100, max(1, int(request.query_params.get("page_size", 25))))
+        total_orders = registrations.count()
+        totals = registrations.aggregate(
+            amount=Sum("order_total"),
+            cash=Sum("order_total", filter=Q(payment_method="CASH")),
+            upi=Sum("order_total", filter=Q(payment_method="UPI")),
+            card=Sum("order_total", filter=Q(payment_method="CARD")),
+        )
+        tickets_sold = Ticket.objects.filter(registration__in=registrations).count()
+        page_items = (
+            registrations.select_related("created_by", "event")
+            .prefetch_related("tickets")
+            .annotate(ticket_count=Count("tickets"))
+            .order_by("-created_at")[(page - 1) * page_size : page * page_size]
+        )
+        results = [
+            {
+                "id": str(registration.pk),
+                "created_at": registration.created_at,
+                "desk": registration.created_by.desk if registration.created_by else "",
+                "desk_name": registration.created_by.name if registration.created_by else "",
+                "event_name": registration.event.name,
+                "attendee_name": registration.buyer_name,
+                "attendee_email": registration.buyer_email,
+                "attendee_phone": registration.buyer_phone,
+                "payment_method": registration.payment_method,
+                "transaction_reference": registration.transaction_id,
+                "payment_status": registration.payment_status,
+                "amount": str(registration.order_total or 0),
+                "ticket_count": registration.ticket_count,
+                "tickets": [
+                    {
+                        "ticket_number": ticket.ticket_number,
+                        "attendee_name": ticket.attendee_name,
+                        "status": ticket.status,
+                        "checked_in_at": ticket.checked_in_at,
+                    }
+                    for ticket in registration.tickets.all()
+                ],
+            }
+            for registration in page_items
+        ]
+        return Response({
+            "count": total_orders,
+            "page": page,
+            "page_size": page_size,
+            "tickets_sold": tickets_sold,
+            "total": str(totals["amount"] or 0),
+            "cash_total": str(totals["cash"] or 0),
+            "upi_total": str(totals["upi"] or 0),
+            "card_total": str(totals["card"] or 0),
+            "results": results,
+        })
 
 
 def _combined_sheet_sync_status(sync_jobs):
@@ -505,7 +677,19 @@ class ScanValidationView(APIView):
         credential = request.data.get("credential")
         if not isinstance(credential, str) or not 1 <= len(credential.strip()) <= 256:
             return Response({"detail": "A valid scan credential is required."}, status=400)
+        method = request.data.get("method", CheckIn.Method.QR)
+        if method not in CheckIn.Method.values:
+            return Response({"detail": "Method must be QR or MANUAL."}, status=400)
         validation_result, ticket = validate_ticket_credential(credential)
+        if validation_result != "VALID":
+            _record_scan_attempt(
+                request.user,
+                credential,
+                ticket=ticket,
+                result=getattr(CheckIn.Result, validation_result, CheckIn.Result.INVALID),
+                gate=_scan_gate(request),
+                method=method,
+            )
         payload = {
             "result": validation_result,
             "ticket_id": str(ticket.pk) if ticket else None,
@@ -525,6 +709,9 @@ class ScanCheckInView(APIView):
         credential = request.data.get("credential")
         if not isinstance(credential, str) or not 1 <= len(credential.strip()) <= 256:
             return Response({"detail": "A valid scan credential is required."}, status=400)
+        method = request.data.get("method", CheckIn.Method.QR)
+        if method not in CheckIn.Method.values:
+            return Response({"detail": "Method must be QR or MANUAL."}, status=400)
         gate = _scan_gate(request)
         if request.user.role == User.Role.SCANNER and not gate:
             return Response({"detail": "This scanner account is not assigned to a gate."}, status=403)
@@ -537,6 +724,7 @@ class ScanCheckInView(APIView):
                 ticket=ticket,
                 result=getattr(CheckIn.Result, validation_result, CheckIn.Result.INVALID),
                 gate=gate,
+                method=method,
             )
             return Response({"result": validation_result, "ticket_number": ticket.ticket_number if ticket else None}, status=409)
 
@@ -544,6 +732,7 @@ class ScanCheckInView(APIView):
             credential=credential,
             scanner=request.user,
             gate=gate,
+            method=method,
         )
         data = {"result": result, "checked_in_at": ticket.checked_in_at if ticket else None}
         if ticket:

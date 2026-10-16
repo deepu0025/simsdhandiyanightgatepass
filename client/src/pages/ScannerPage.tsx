@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Html5Qrcode, type Html5QrcodeCameraScanConfig } from 'html5-qrcode';
-import { Camera, CameraOff, CheckCircle2, LogOut, RotateCcw, Volume2, VolumeX, XCircle } from 'lucide-react';
+import { ArrowRight, Camera, CameraOff, CheckCircle2, LogOut, RotateCcw, Volume2, VolumeX, XCircle } from 'lucide-react';
 import type { User } from '../api';
 import { api } from '../api';
 
@@ -14,8 +14,10 @@ export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut
   const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
   const [camera, setCamera] = useState('');
   const [muted, setMuted] = useState(false);
+  const [manualTicketId, setManualTicketId] = useState('');
   const [result, setResult] = useState<ScanResult | null>(null);
   const [pendingCredential, setPendingCredential] = useState('');
+  const [pendingMethod, setPendingMethod] = useState<'QR' | 'MANUAL'>('QR');
   const [checkingIn, setCheckingIn] = useState(false);
   const [history, setHistory] = useState<Array<Record<string, string>>>([]);
   const [error, setError] = useState('');
@@ -29,16 +31,22 @@ export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut
         setCameras(list);
         setCamera((current) => current || list[0]?.id || '');
       })
-      .catch(() => setError('Camera permission is needed to scan. You can still use a compatible scanner in manual mode.'));
+      .catch(() => setError('Camera permission is needed to scan. You can still enter the ticket ID manually.'));
     return () => {
       if (scannerRef.current?.isScanning) void scannerRef.current.stop();
     };
   }, []);
 
-  const submitCredential = useCallback(async (credential: string) => {
+  async function submitManualTicket(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    lastSubmittedCredentialRef.current = '';
+    await submitCredential(manualTicketId, 'MANUAL');
+  }
+
+  const submitCredential = useCallback(async (credential: string, method: 'QR' | 'MANUAL' = 'QR') => {
     const normalized = String(credential ?? '').trim();
     if (!normalized || normalized.length > 256) {
-      setError('Invalid QR code. Please scan a valid Gatehouse ticket.');
+      setError('Enter a ticket ID or scan a valid Gatehouse ticket.');
       return;
     }
     if (busyRef.current || lastSubmittedCredentialRef.current === normalized) return;
@@ -46,9 +54,10 @@ export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut
     lastSubmittedCredentialRef.current = normalized;
     setError('');
     try {
-      const data = await api.validateScan(normalized);
+      const data = await api.validateScan(normalized, method);
       setResult(data);
       setPendingCredential(data.result === 'VALID' ? normalized : '');
+      setPendingMethod(method);
       if (scannerRef.current?.isScanning) await scannerRef.current.stop();
       setRunning(false);
     } catch (reason) {
@@ -87,9 +96,10 @@ export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut
     setCheckingIn(true);
     setError('');
     try {
-      const data = await api.checkInScan(pendingCredential);
+      const data = await api.checkInScan(pendingCredential, pendingMethod);
       setResult(data);
       setPendingCredential('');
+      setPendingMethod('QR');
       if (!muted && data.result === 'ACCEPTED') {
         const AudioContextClass = window.AudioContext;
         if (AudioContextClass) {
@@ -120,6 +130,7 @@ export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut
   async function scanNextTicket() {
     lastSubmittedCredentialRef.current = '';
     setPendingCredential('');
+    setPendingMethod('QR');
     setResult(null);
     setError('');
     await start();
@@ -153,6 +164,28 @@ export default function ScannerPage({ user, onSignOut }: { user: User; onSignOut
             <button onClick={() => void start()} disabled={running || Boolean(pendingCredential) || checkingIn} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-accent px-4 font-medium text-white disabled:opacity-50"><Camera size={18} />Start camera</button>
             <button onClick={() => void stop()} disabled={!running} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-slate-100 px-4 font-medium text-slate-700 disabled:opacity-50"><RotateCcw size={18} />Stop / restart</button>
           </div>
+          <form onSubmit={(event) => void submitManualTicket(event)} className="mt-5 border-t border-slate-100 pt-4">
+            <label htmlFor="manual-ticket-id" className="block text-sm font-semibold text-ink">Enter ticket ID manually</label>
+            <p className="mt-1 text-xs text-slate-500">Use this if the camera or QR code is not working. The ticket ID is printed on the ticket.</p>
+            <div className="mt-2 flex gap-2">
+              <input
+                id="manual-ticket-id"
+                className="field min-w-0 uppercase"
+                autoComplete="off"
+                autoCapitalize="characters"
+                maxLength={256}
+                placeholder="SIMS-DN-OFF-00001"
+                value={manualTicketId}
+                onChange={(event) => setManualTicketId(event.target.value)}
+                disabled={Boolean(pendingCredential) || checkingIn}
+              />
+              <button
+                type="submit"
+                disabled={!manualTicketId.trim() || Boolean(pendingCredential) || checkingIn}
+                className="flex min-h-12 shrink-0 items-center justify-center gap-2 rounded-xl bg-ink px-4 font-medium text-white disabled:opacity-40"
+              >Find ticket <ArrowRight size={17} /></button>
+            </div>
+          </form>
           {error && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
         </section>
         <aside className="space-y-5">

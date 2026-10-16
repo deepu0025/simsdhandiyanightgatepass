@@ -11,6 +11,8 @@ const OnSpotPage = lazy(() => import('./pages/OnSpotPage'));
 const ScannerPage = lazy(() => import('./pages/ScannerPage'));
 const GateAccessPage = lazy(() => import('./pages/GateAccessPage'));
 const DeskAccessPage = lazy(() => import('./pages/DeskAccessPage'));
+const DeskHistoryPage = lazy(() => import('./pages/DeskHistoryPage'));
+const StaffActivityPage = lazy(() => import('./pages/StaffActivityPage'));
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -92,6 +94,28 @@ export default function App() {
           user?.role === 'ADMIN' ? (
             <Shell user={user} onSignOut={signOut}>
               <Suspense fallback={pending}><DeskAccessPage /></Suspense>
+            </Shell>
+          ) : user ? <Navigate to={user.role === 'SCANNER' ? '/scanner' : '/on-spot'} replace /> : <Navigate to="/login" replace />
+        }
+      />
+      <Route
+        path="/desk-history"
+        element={
+          user?.role === 'DESK' ? (
+            <Suspense fallback={pending}><DeskHistoryPage user={user} onSignOut={signOut} /></Suspense>
+          ) : user?.role === 'ADMIN' ? (
+            <Shell user={user} onSignOut={signOut}>
+              <Suspense fallback={pending}><DeskHistoryPage user={user} /></Suspense>
+            </Shell>
+          ) : user ? <Navigate to={user.role === 'SCANNER' ? '/scanner' : '/on-spot'} replace /> : <Navigate to="/login" replace />
+        }
+      />
+      <Route
+        path="/staff-activity"
+        element={
+          user?.role === 'ADMIN' ? (
+            <Shell user={user} onSignOut={signOut}>
+              <Suspense fallback={pending}><StaffActivityPage /></Suspense>
             </Shell>
           ) : user ? <Navigate to={user.role === 'SCANNER' ? '/scanner' : '/on-spot'} replace /> : <Navigate to="/login" replace />
         }

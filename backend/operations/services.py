@@ -10,8 +10,15 @@ from reportlab.lib.utils import ImageReader
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from .models import AuditLog, CheckIn, Event, Ticket
+from .models import AuditLog, CheckIn, Event, OfflineTicketCounter, Ticket
 from .sheets_sync import queue_ticket_sync
+
+
+def next_offline_ticket_number():
+    counter = OfflineTicketCounter.objects.select_for_update().get(pk=1)
+    counter.last_number += 1
+    counter.save(update_fields=("last_number",))
+    return f"SIMS-DN-OFF-{counter.last_number:05d}"
 
 
 def _build_pdf(ticket, credential):
@@ -146,10 +153,12 @@ def _record_scan_attempt(scanner, credential, *, result=None, ticket=None, gate=
 
 
 @transaction.atomic
-def check_in_ticket(credential, scanner, gate=""):
+def check_in_ticket(credential, scanner, gate="", method=CheckIn.Method.QR):
     ticket = _find_ticket_by_identifier(credential, for_update=True)
     if ticket is None:
-        _record_scan_attempt(scanner, credential, result=CheckIn.Result.INVALID, gate=gate)
+        _record_scan_attempt(
+            scanner, credential, result=CheckIn.Result.INVALID, gate=gate, method=method
+        )
         return CheckIn.Result.INVALID, None
     if ticket.status != Ticket.Status.ISSUED:
         result = CheckIn.Result.CANCELLED
@@ -160,7 +169,9 @@ def check_in_ticket(credential, scanner, gate=""):
         ticket.checked_in_at = timezone.now()
         ticket.checked_in_by = scanner
         ticket.save(update_fields=("checked_in_at", "checked_in_by", "updated_at"))
-    _record_scan_attempt(scanner, credential, ticket=ticket, result=result, gate=gate)
+    _record_scan_attempt(
+        scanner, credential, ticket=ticket, result=result, gate=gate, method=method
+    )
     if result == CheckIn.Result.ACCEPTED:
         queue_ticket_sync(ticket.pk)
     return result, ticket

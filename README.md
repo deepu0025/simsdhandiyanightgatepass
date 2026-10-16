@@ -1,8 +1,12 @@
 # Gatehouse Event Ticket Operations
 
-A standalone operations application, kept separate from the public ticket-booking website. It includes a Django REST API, role-based sessions, event/ticket records, QR/PDF ticket issuance, atomic check-in, an admin dashboard, a mobile scanner, staged CSV/XLSX imports, and on-spot registration.
+A standalone operations application, kept separate from the public ticket-booking website. It includes a Django REST API, role-based sessions, event/ticket records, QR/PDF ticket issuance, atomic check-in, admin and per-staff activity dashboards, a mobile scanner, staged CSV/XLSX imports, and on-spot registration.
 
-Admins can manually check in a guest without a QR scan from the ticket register. A reason is required and recorded with the actor and outcome in check-in history and the audit log. This override can admit pending/unissued tickets, but cannot admit cancelled/revoked tickets or check in a ticket twice. Online ticket payment review happens in the spreadsheet; after an admin explicitly commits an import with a verified payment status, Gatehouse issues the QR/PDF. For on-spot registrations, the attendant confirms payment at the desk; Gatehouse records the verification, issues the ticket, and checks the attendee in immediately. The check-in is attributed to the logged-in desk/admin account. Scanning validates the issued ticket and its revocation/check-in state without rechecking payment.
+Admins can manually check in a guest without a QR scan from the ticket register. A reason is required and recorded with the actor and outcome in check-in history and the audit log. This override can admit pending/unissued tickets, but cannot admit cancelled/revoked tickets or check in a ticket twice. Online ticket payment review happens in the spreadsheet; after an admin explicitly commits an import with a verified payment status, Gatehouse issues the QR/PDF. For on-spot registrations, the attendant enters a separate attendee name for every ticket; the contact email and phone are shared across the order. The attendant confirms payment at the desk; Gatehouse records the verification, issues each ticket, and checks each attendee in immediately. The check-in is attributed to the logged-in desk/admin account. Scanners can validate and check in by QR or enter the printed ticket number manually; manual ID check-ins are recorded separately from QR scans.
+
+The admin **Staff activity** page reports scan totals and recent scan outcomes by gate scanner, plus on-spot tickets sold and cash, UPI, and card totals by registration desk. Recent scanner and desk activity is shown separately; totals cover all recorded activity and the page refreshes every 30 seconds.
+
+Each registration desk can open **Desk history** from its on-spot registration screen to review its own orders, ticket numbers and attendee names, payment method and reference, and check-in timestamps. Desk history is paginated, and the backend scopes desk accounts to their own registrations; admins can review all desk history or filter to one desk.
 
 ## Project structure
 
@@ -66,6 +70,8 @@ Keep OAuth client secrets and refresh tokens only in `.env` or a deployment secr
 ## Google Sheets synchronization setup
 
 Online payment status is maintained in Google Sheets and imported into Gatehouse automatically; Gatehouse does not independently approve online payments. On-spot payments are confirmed by the attendant during registration and are immediately marked verified and checked in. Each on-spot registration is synced to `OnSpot_Tickets` before the API response when Sheets is configured; transient failures are retained for retry by the worker, while configuration or permanent sheet errors are reported as failed sync jobs. Rows include attendee/contact and payment details, event and registration IDs, verification and issue timestamps, check-in time, verifying account, and the on-spot desk number. Existing worksheets with the previous header are extended automatically. The continuous worker checks both `Online_Tickets` and `OnSpot_Tickets` every 30 seconds, validates changed snapshots, and commits them through the normal import path. Imported verified payment status or imported sent-email evidence can authorize ticket issuance. The worker does not send ticket emails. Sheets access and import failures do not block scanning or other operations.
+
+On-spot ticket numbers use the globally incrementing format `SIMS-DN-OFF-00001`. Each ticket in a single or combo order gets its own sequential number; the database counter is locked while numbers are assigned so concurrent desks do not generate duplicates.
 
 1. In Google Cloud Console, enable **Google Sheets API** for the project.
 2. Create a service account and download its JSON key. Store that file only on the backend host, outside source control (for example, under the ignored `backend/secrets/` folder); do not paste the JSON or private key into `.env`.
@@ -157,8 +163,21 @@ From `backend/`: `python manage.py test operations`
 
 From `client/`: `npm run typecheck` and `npm run build`
 
-Concurrency guarantees must additionally be exercised against PostgreSQL. SQLite cannot validate row-level locking semantics.
+Run the PostgreSQL-only concurrency tests against a dedicated, disposable PostgreSQL database (never production):
+
+```powershell
+$env:DATABASE_URL = "<dedicated PostgreSQL test database URL>"
+python manage.py test operations.tests.PostgreSQLConcurrencyTests
+```
+
+`scripts/run_validation_load.py` is a standard-library, read-only scanner-validation load runner. It requires `QA_TEST_TARGET=YES`, a dedicated `QA_BASE_URL`, `QA_SCANNER_ACCOUNTS_JSON`, and `QA_VALID_TICKET_IDS` containing unused issued test tickets. For a remote staging target, also set `QA_ALLOW_REMOTE_TEST_TARGET=YES` and a unique `QA_TEST_RUN_ID`; remote targets must use HTTPS. It refuses the configured production hostname and does not follow HTTP redirects. From `backend/`:
+
+```powershell
+python ..\scripts\run_validation_load.py --scenario baseline
+```
+
+Presets are `baseline`, `normal`, `peak`, `stress`, `soak`, `burst`, and `recovery`; they select client count and duration for steady validation traffic. The burst/recovery names do not implement traffic ramps or fault-recovery scenarios. Client count, duration, request rate, and timeout can be overridden with CLI arguments. This runner measures only `/api/scanner/validate/`; it does not exercise registration creation, check-in mutation, browser camera detection, or offline operation. Never use production accounts or tickets. SQLite cannot validate row-level locking semantics.
 
 ## Current implementation stage
 
-This is a working local-development stage, not yet the complete production system in the build brief. Automatic email retry workers, a cloud object-storage adapter (a shared private persistent `MEDIA_ROOT` is supported), backup/restore automation, and PostgreSQL concurrency testing remain to be completed before production deployment.
+This is a working local-development stage, not yet the complete production system in the build brief. Offline-first scanning/registration and conflict reconciliation are not implemented. PostgreSQL-only concurrency tests exist but must be run against a dedicated PostgreSQL database. Production load/E2E testing, automatic email retry workers, a cloud object-storage adapter (a shared private persistent `MEDIA_ROOT` is supported), and backup/restore automation remain to be completed before production deployment.

@@ -237,6 +237,11 @@ class Ticket(models.Model):
         return self.has_imported_payment_verification or self.has_imported_email_verification
 
 
+class OfflineTicketCounter(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    last_number = models.PositiveBigIntegerField(default=0)
+
+
 class EmailDeliveryAttempt(models.Model):
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="email_attempts")
     status = models.CharField(max_length=16, choices=Ticket.EmailStatus.choices)

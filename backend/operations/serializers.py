@@ -92,6 +92,12 @@ class OnSpotRegistrationSerializer(serializers.Serializer):
 
     event_id = serializers.UUIDField()
     attendee_name = serializers.CharField(max_length=160)
+    attendee_names = serializers.ListField(
+        child=serializers.CharField(max_length=160),
+        required=False,
+        allow_empty=False,
+        max_length=120,
+    )
     attendee_email = serializers.EmailField()
     attendee_phone = serializers.CharField(max_length=10, required=False, allow_blank=True)
     ticket_type = serializers.ChoiceField(choices=(SINGLE_TICKET, COMBO_TICKET))
@@ -127,6 +133,17 @@ class OnSpotRegistrationSerializer(serializers.Serializer):
         package_size = 6 if attrs["ticket_type"] == self.COMBO_TICKET else 1
         paid_ticket_count = 5 if package_size == 6 else 1
         attrs["ticket_count"] = attrs["quantity"] * package_size
+        attendee_names = attrs.get("attendee_names")
+        if attendee_names is None:
+            attendee_names = [attrs["attendee_name"]] * attrs["ticket_count"]
+        elif len(attendee_names) != attrs["ticket_count"]:
+            raise serializers.ValidationError({
+                "attendee_names": f"Enter one attendee name for each of the {attrs['ticket_count']} tickets."
+            })
+        if any(not name.strip() for name in attendee_names):
+            raise serializers.ValidationError({"attendee_names": "Every ticket needs an attendee name."})
+        attrs["attendee_names"] = attendee_names
+        attrs["attendee_name"] = attendee_names[0]
         attrs["amount"] = attrs["quantity"] * paid_ticket_count * self.TICKET_PRICE
         return attrs
 

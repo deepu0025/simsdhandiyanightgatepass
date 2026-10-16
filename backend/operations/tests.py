@@ -2,18 +2,22 @@ import base64
 import hashlib
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from datetime import timedelta
 from email import policy
 from email.parser import BytesParser
 from io import BytesIO
+from threading import Barrier
+from unittest import skipUnless
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.db import close_old_connections, connection
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -112,6 +116,27 @@ class TicketOperationsTests(TestCase):
     def tearDown(self):
         self.settings_override.disable()
         self.tmp_media.cleanup()
+
+    def test_admin_ticket_search_accepts_ticket_number_and_registration_uuid(self):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+
+        ticket_search = client.get("/api/admin/tickets/", {"q": self.ticket.ticket_number})
+        self.assertEqual(ticket_search.status_code, 200)
+        self.assertEqual(
+            [item["id"] for item in ticket_search.data["results"]],
+            [str(self.ticket.pk)],
+        )
+
+        registration_search = client.get(
+            "/api/admin/tickets/",
+            {"q": str(self.registration.pk)},
+        )
+        self.assertEqual(registration_search.status_code, 200)
+        self.assertEqual(
+            [item["id"] for item in registration_search.data["results"]],
+            [str(self.ticket.pk)],
+        )
 
     def test_issue_generates_pdf_and_random_qr_credential_only_once(self):
         ticket, credential = issue_ticket(self.ticket.pk, self.admin)
@@ -308,6 +333,46 @@ class TicketOperationsTests(TestCase):
         self.assertIsNone(self.ticket.checked_in_at)
         self.assertFalse(self.ticket.scan_events.exists())
 
+    def test_invalid_ticket_validation_is_recorded_for_scanner_history(self):
+        client = APIClient()
+        client.force_authenticate(self.scanner)
+
+        response = client.post(
+            "/api/scanner/validate/",
+            {"credential": "SIMS-DUMMY-NOT-FOUND"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["result"], CheckIn.Result.INVALID)
+        attempt = CheckIn.objects.get(scanner=self.scanner)
+        self.assertEqual(attempt.result, CheckIn.Result.INVALID)
+        self.assertEqual(attempt.method, CheckIn.Method.QR)
+
+    def test_manual_ticket_number_lookup_can_check_in_and_is_recorded_as_manual(self):
+        issue_ticket(self.ticket.pk, self.admin)
+        client = APIClient()
+        client.force_authenticate(self.scanner)
+
+        validation = client.post(
+            "/api/scanner/validate/",
+            {"credential": self.ticket.ticket_number, "method": CheckIn.Method.MANUAL},
+            format="json",
+        )
+        self.assertEqual(validation.status_code, 200)
+        self.assertEqual(validation.data["result"], "VALID")
+        self.assertEqual(validation.data["ticket_number"], self.ticket.ticket_number)
+        self.assertFalse(self.ticket.scan_events.exists())
+
+        checked_in = client.post(
+            "/api/scanner/check-in/",
+            {"credential": self.ticket.ticket_number, "method": CheckIn.Method.MANUAL},
+            format="json",
+        )
+        self.assertEqual(checked_in.status_code, 200)
+        self.assertEqual(checked_in.data["result"], CheckIn.Result.ACCEPTED)
+        self.assertEqual(self.ticket.scan_events.get().method, CheckIn.Method.MANUAL)
+
     def test_admin_can_manually_check_in_pending_unissued_ticket_with_audited_reason(self):
         self.registration.payment_status = Registration.PaymentStatus.PENDING
         self.registration.save(update_fields=("payment_status",))
@@ -380,6 +445,138 @@ class TicketOperationsTests(TestCase):
         client = APIClient()
         client.force_authenticate(self.scanner)
         self.assertEqual(client.get("/api/admin/dashboard/").status_code, 403)
+        self.assertEqual(client.get("/api/admin/staff-activity/").status_code, 403)
+
+    def test_staff_activity_dashboard_reports_per_scanner_and_desk_totals(self):
+        desk = User.objects.create_user(
+            "desk-one@example.test",
+            "Secure-test-password-123!",
+            name="Desk One Attendant",
+            role=User.Role.DESK,
+            desk="DESK_1",
+        )
+        cash_registration = Registration.objects.create(
+            event=self.event,
+            source=Registration.Source.ON_SPOT,
+            buyer_name="Cash Guest",
+            buyer_email="cash@example.test",
+            order_total=Decimal("149.00"),
+            payment_method="CASH",
+            payment_status=Registration.PaymentStatus.VERIFIED,
+            created_by=desk,
+        )
+        upi_registration = Registration.objects.create(
+            event=self.event,
+            source=Registration.Source.ON_SPOT,
+            buyer_name="UPI Guest",
+            buyer_email="upi@example.test",
+            order_total=Decimal("745.00"),
+            payment_method="UPI",
+            payment_status=Registration.PaymentStatus.VERIFIED,
+            created_by=desk,
+        )
+        Ticket.objects.create(
+            ticket_number="DESK-CASH-1",
+            registration=cash_registration,
+            ticket_type="Single ticket",
+            attendee_name="Cash Guest",
+            attendee_email="cash@example.test",
+        )
+        for number in range(1, 7):
+            Ticket.objects.create(
+                ticket_number=f"DESK-UPI-{number}",
+                registration=upi_registration,
+                ticket_type="Combo 5+1",
+                attendee_name="UPI Guest",
+                attendee_email="upi@example.test",
+            )
+        CheckIn.objects.create(
+            ticket=self.ticket,
+            scanner=self.scanner,
+            gate="GATE_4",
+            result=CheckIn.Result.ACCEPTED,
+            method=CheckIn.Method.QR,
+        )
+        CheckIn.objects.create(
+            scanner=self.scanner,
+            gate="GATE_4",
+            result=CheckIn.Result.INVALID,
+            method=CheckIn.Method.QR,
+        )
+
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        response = client.get("/api/admin/staff-activity/")
+
+        self.assertEqual(response.status_code, 200)
+        scanner = next(item for item in response.data["scanners"] if item["id"] == self.scanner.pk)
+        self.assertEqual(scanner["scans"], 2)
+        self.assertEqual(scanner["accepted"], 1)
+        self.assertEqual(scanner["failed"], 1)
+        self.assertEqual(len(response.data["recent_scans"]), 2)
+        desk_stats = next(item for item in response.data["desks"] if item["id"] == desk.pk)
+        self.assertEqual(desk_stats["tickets_sold"], 7)
+        self.assertEqual(desk_stats["orders"], 2)
+        self.assertEqual(desk_stats["cash_total"], "149")
+        self.assertEqual(desk_stats["upi_total"], "745")
+        self.assertEqual(desk_stats["total"], "894")
+        self.assertEqual(len(response.data["recent_sales"]), 2)
+
+        desk_client = APIClient()
+        desk_client.force_authenticate(desk)
+        self.assertEqual(desk_client.get("/api/admin/staff-activity/").status_code, 403)
+
+    def test_desk_history_is_limited_to_own_desk_and_admin_can_filter(self):
+        desk_one = User.objects.create_user(
+            "history-desk-one@example.test",
+            "Secure-test-password-123!",
+            name="Desk One",
+            role=User.Role.DESK,
+            desk="DESK_1",
+        )
+        desk_two = User.objects.create_user(
+            "history-desk-two@example.test",
+            "Secure-test-password-123!",
+            name="Desk Two",
+            role=User.Role.DESK,
+            desk="DESK_2",
+        )
+        for desk, label, method, amount in (
+            (desk_one, "Desk One Guest", "CASH", Decimal("149")),
+            (desk_two, "Desk Two Guest", "UPI", Decimal("745")),
+        ):
+            registration = Registration.objects.create(
+                event=self.event,
+                source=Registration.Source.ON_SPOT,
+                buyer_name=label,
+                buyer_email=f"{desk.desk.lower()}@example.test",
+                order_total=amount,
+                payment_method=method,
+                payment_status=Registration.PaymentStatus.VERIFIED,
+                created_by=desk,
+            )
+            Ticket.objects.create(
+                ticket_number=f"HISTORY-{desk.desk}",
+                registration=registration,
+                ticket_type="Single ticket",
+                attendee_name=label,
+                attendee_email=registration.buyer_email,
+            )
+
+        desk_client = APIClient()
+        desk_client.force_authenticate(desk_one)
+        own_history = desk_client.get("/api/admin/desk-history/?desk_id={}".format(desk_two.pk))
+        self.assertEqual(own_history.status_code, 200)
+        self.assertEqual(own_history.data["count"], 1)
+        self.assertEqual(own_history.data["results"][0]["attendee_name"], "Desk One Guest")
+        self.assertEqual(own_history.data["cash_total"], "149")
+
+        admin_client = APIClient()
+        admin_client.force_authenticate(self.admin)
+        selected_desk = admin_client.get(f"/api/admin/desk-history/?desk_id={desk_two.pk}")
+        self.assertEqual(selected_desk.status_code, 200)
+        self.assertEqual(selected_desk.data["results"][0]["attendee_name"], "Desk Two Guest")
+        self.assertEqual(selected_desk.data["upi_total"], "745")
 
     def test_admin_can_create_and_activate_event_in_application(self):
         client = APIClient()
@@ -482,6 +679,7 @@ class TicketOperationsTests(TestCase):
         self.assertEqual(registration.imported_payment_status, "VERIFIED")
         ticket = Ticket.objects.get(pk=response.data["ticket"]["id"])
         self.assertEqual(ticket.status, Ticket.Status.ISSUED)
+        self.assertEqual(ticket.ticket_number, "SIMS-DN-OFF-00001")
         self.assertIsNotNone(ticket.checked_in_at)
         self.assertEqual(ticket.checked_in_by, desk_user)
         self.assertEqual(ticket.registration.imported_verified_by, "desk-one@example.test")
@@ -674,6 +872,7 @@ class TicketOperationsTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertTrue(response.data["issued"])
         self.assertEqual(response.data["ticket"]["status"], Ticket.Status.ISSUED)
+        self.assertEqual(response.data["ticket"]["ticket_number"], "SIMS-DN-OFF-00001")
         self.assertEqual(response.data["ticket"]["payment_status"], "VERIFIED")
         self.assertEqual(response.data["ticket"]["checkin_method"], CheckIn.Method.MANUAL)
         self.assertIsNotNone(response.data["ticket"]["checked_in_at"])
@@ -754,6 +953,7 @@ class TicketOperationsTests(TestCase):
             {
                 "event_id": str(self.event.pk),
                 "attendee_name": "Combo Guest",
+                "attendee_names": [f"Combo Guest {number}" for number in range(1, 7)],
                 "attendee_email": "combo@example.com",
                 "attendee_phone": "9876543210",
                 "ticket_type": "Combo 5+1",
@@ -770,6 +970,14 @@ class TicketOperationsTests(TestCase):
         self.assertEqual(response.data["amount"], "745")
         tickets = Ticket.objects.filter(registration_id=response.data["registration_id"])
         self.assertEqual(tickets.count(), 6)
+        self.assertEqual(
+            list(tickets.order_by("ticket_number").values_list("attendee_name", flat=True)),
+            [f"Combo Guest {number}" for number in range(1, 7)],
+        )
+        self.assertEqual(
+            list(tickets.order_by("ticket_number").values_list("ticket_number", flat=True)),
+            [f"SIMS-DN-OFF-{number:05d}" for number in range(1, 7)],
+        )
         self.assertEqual(tickets.values("ticket_number").distinct().count(), 6)
         self.assertEqual(tickets.filter(status=Ticket.Status.ISSUED).count(), 6)
         self.assertEqual(tickets.filter(checked_in_at__isnull=False).count(), 6)
@@ -784,6 +992,44 @@ class TicketOperationsTests(TestCase):
         self.assertEqual(
             Registration.objects.get(pk=response.data["registration_id"]).order_total,
             Decimal("745"),
+        )
+
+        next_order = client.post(
+            "/api/admin/registrations/on-spot/",
+            {
+                "event_id": str(self.event.pk),
+                "attendee_name": "Next Guest",
+                "attendee_email": "next@example.com",
+                "ticket_type": "Single ticket",
+                "quantity": 1,
+                "payment_method": "CASH",
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="after-combo-single",
+        )
+        self.assertEqual(next_order.data["ticket"]["ticket_number"], "SIMS-DN-OFF-00007")
+
+    def test_on_spot_registration_requires_one_name_per_ticket(self):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        response = client.post(
+            "/api/admin/registrations/on-spot/",
+            {
+                "event_id": str(self.event.pk),
+                "attendee_name": "First Guest",
+                "attendee_names": ["First Guest"],
+                "attendee_email": "group@example.com",
+                "ticket_type": "Single ticket",
+                "quantity": 2,
+                "payment_method": "CASH",
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="missing-second-attendee-name",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("attendee_names", response.data)
+        self.assertFalse(
+            Registration.objects.filter(idempotency_key="missing-second-attendee-name").exists()
         )
 
     def test_on_spot_registration_validates_indian_mobile_and_email_domain(self):
@@ -1576,3 +1822,138 @@ class TicketOperationsTests(TestCase):
         self.assertTrue(all("error" in result for result in results))
         self.assertFalse(read_sheet.called)
         self.assertEqual(ImportBatch.objects.count(), 0)
+
+
+@skipUnless(connection.vendor == "postgresql", "PostgreSQL row-lock semantics are required.")
+class PostgreSQLConcurrencyTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        self.temp_media = tempfile.TemporaryDirectory()
+        self.settings_override = override_settings(
+            MEDIA_ROOT=self.temp_media.name,
+            GOOGLE_SHEETS_SPREADSHEET_ID="",
+            GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON="",
+            GOOGLE_SERVICE_ACCOUNT_FILE="",
+        )
+        self.settings_override.enable()
+        self.addCleanup(self.settings_override.disable)
+        self.addCleanup(self.temp_media.cleanup)
+
+        self.admin = User.objects.create_user(
+            "concurrency-admin@example.test",
+            "Secure-test-password-123!",
+            name="Concurrency Admin",
+            role=User.Role.ADMIN,
+        )
+        self.scanners = [
+            User.objects.create_user(
+                f"concurrency-scanner-{gate}@example.test",
+                "Secure-test-password-123!",
+                name=f"Scanner {gate}",
+                role=User.Role.SCANNER,
+                gate=f"GATE_{gate}",
+            )
+            for gate in range(1, 5)
+        ]
+        self.desks = [
+            User.objects.create_user(
+                f"concurrency-desk-{desk}@example.test",
+                "Secure-test-password-123!",
+                name=f"Desk {desk}",
+                role=User.Role.DESK,
+                desk=f"DESK_{desk}",
+            )
+            for desk in range(1, 3)
+        ]
+        starts_at = timezone.now() + timedelta(days=2)
+        self.event = Event.objects.create(
+            name="Concurrency Test Event",
+            starts_at=starts_at,
+            ends_at=starts_at + timedelta(hours=3),
+            venue="Dedicated test venue",
+        )
+
+    def _post_simultaneously(self, items, request_builder):
+        barrier = Barrier(len(items))
+
+        def send(item):
+            close_old_connections()
+            try:
+                barrier.wait(timeout=15)
+                return request_builder(item)
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=len(items)) as executor:
+            return list(executor.map(send, items))
+
+    def test_four_scanners_cannot_check_in_one_ticket_twice(self):
+        registration = Registration.objects.create(
+            event=self.event,
+            source=Registration.Source.ONLINE,
+            buyer_name="Concurrency Guest",
+            buyer_email="guest@example.test",
+            payment_status=Registration.PaymentStatus.PAID,
+            imported_payment_status="VERIFIED",
+        )
+        ticket = Ticket.objects.create(
+            ticket_number="SIMS-DUMMY-CONCURRENCY-1",
+            registration=registration,
+            ticket_type="Single ticket",
+            attendee_name="Concurrency Guest",
+            attendee_email="guest@example.test",
+        )
+        _ticket, credential = issue_ticket(ticket.pk, actor=self.admin)
+
+        def scan(scanner):
+            client = APIClient()
+            client.force_authenticate(User.objects.get(pk=scanner.pk))
+            response = client.post(
+                "/api/scanner/scan/",
+                {"credential": credential},
+                format="json",
+            )
+            return response.status_code, response.data["result"]
+
+        responses = self._post_simultaneously(self.scanners, scan)
+
+        self.assertEqual([result for _, result in responses].count(CheckIn.Result.ACCEPTED), 1)
+        self.assertEqual([result for _, result in responses].count(CheckIn.Result.ALREADY_USED), 3)
+        self.assertEqual(
+            CheckIn.objects.filter(ticket=ticket, result=CheckIn.Result.ACCEPTED).count(),
+            1,
+        )
+        ticket.refresh_from_db()
+        self.assertIsNotNone(ticket.checked_in_at)
+
+    def test_two_desks_concurrently_create_unique_ticket_numbers(self):
+        def register(desk):
+            client = APIClient()
+            client.force_authenticate(User.objects.get(pk=desk.pk))
+            payload = {
+                "event_id": str(self.event.pk),
+                "attendee_name": desk.name,
+                "attendee_names": [desk.name],
+                "attendee_email": desk.email,
+                "ticket_type": "Single ticket",
+                "quantity": 1,
+                "payment_method": "CASH",
+            }
+            response = client.post(
+                "/api/admin/registrations/on-spot/",
+                payload,
+                format="json",
+                HTTP_IDEMPOTENCY_KEY=f"concurrency-{desk.desk.lower()}",
+            )
+            return response.status_code, response.data
+
+        responses = self._post_simultaneously(self.desks, register)
+
+        self.assertEqual([status_code for status_code, _ in responses], [201, 201])
+        ticket_numbers = [data["ticket"]["ticket_number"] for _, data in responses]
+        self.assertEqual(len(set(ticket_numbers)), 2)
+        self.assertEqual(
+            Ticket.objects.filter(ticket_number__in=ticket_numbers).count(),
+            2,
+        )

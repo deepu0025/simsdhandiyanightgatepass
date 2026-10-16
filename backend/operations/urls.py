@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     DashboardView,
+    DeskHistoryView,
     DeskUserListView,
     EventDetailView,
     EventListView,
@@ -19,6 +20,7 @@ from .views import (
     ScanValidationView,
     ScanCheckInView,
     ScanView,
+    StaffActivityDashboardView,
     TicketListView,
     TicketEmailView,
     TicketPdfView,
@@ -35,6 +37,8 @@ urlpatterns = [
     path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("auth/me/", MeView.as_view(), name="me"),
     path("admin/dashboard/", DashboardView.as_view(), name="dashboard"),
+    path("admin/staff-activity/", StaffActivityDashboardView.as_view(), name="staff-activity"),
+    path("admin/desk-history/", DeskHistoryView.as_view(), name="desk-history"),
     path("admin/events/", EventListView.as_view(), name="events"),
     path("admin/events/<uuid:event_id>/", EventDetailView.as_view(), name="event-detail"),
     path("admin/tickets/", TicketListView.as_view(), name="tickets"),

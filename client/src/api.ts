@@ -46,6 +46,90 @@ export type DashboardData = {
   }[];
 };
 
+export type StaffActivityData = {
+  scanners: Array<{
+    id: number;
+    name: string;
+    email: string;
+    gate: string;
+    is_active: boolean;
+    scans: number;
+    accepted: number;
+    failed: number;
+    last_scan_at: string | null;
+  }>;
+  desks: Array<{
+    id: number;
+    name: string;
+    email: string;
+    desk: string;
+    is_active: boolean;
+    tickets_sold: number;
+    orders: number;
+    total: string | null;
+    cash_orders: number;
+    cash_total: string | null;
+    upi_orders: number;
+    upi_total: string | null;
+    card_orders: number;
+    card_total: string | null;
+  }>;
+  recent_scans: Array<{
+    id: string;
+    scanner_name: string;
+    scanner_gate: string;
+    scanned_at: string;
+    result: string;
+    method: string;
+    gate: string;
+    ticket_number: string | null;
+    attendee_name: string | null;
+    reason: string;
+  }>;
+  recent_sales: Array<{
+    id: string;
+    desk_name: string;
+    desk: string;
+    attendee_name: string;
+    payment_method: string;
+    amount: string;
+    ticket_count: number;
+    created_at: string;
+  }>;
+};
+
+export type DeskHistoryData = {
+  count: number;
+  page: number;
+  page_size: number;
+  tickets_sold: number;
+  total: string;
+  cash_total: string;
+  upi_total: string;
+  card_total: string;
+  results: Array<{
+    id: string;
+    created_at: string;
+    desk: string;
+    desk_name: string;
+    event_name: string;
+    attendee_name: string;
+    attendee_email: string;
+    attendee_phone: string;
+    payment_method: string;
+    transaction_reference: string;
+    payment_status: string;
+    amount: string;
+    ticket_count: number;
+    tickets: Array<{
+      ticket_number: string;
+      attendee_name: string;
+      status: string;
+      checked_in_at: string | null;
+    }>;
+  }>;
+};
+
 export type TicketRecord = {
   id: string;
   ticket_number: string;
@@ -112,7 +196,8 @@ let csrfToken = '';
 
 async function request<T>(path: string, init: RequestInit = {}, expectedStatuses: number[] = []): Promise<T> {
   const method = (init.method || 'GET').toUpperCase();
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && !csrfToken) {
+  const unsafeMethod = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+  if (unsafeMethod && !csrfToken) {
     await api.csrf();
   }
   const headers = new Headers(init.headers);
@@ -122,13 +207,24 @@ async function request<T>(path: string, init: RequestInit = {}, expectedStatuses
   if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
     headers.set('X-CSRFToken', csrfToken);
   }
-  const response = await fetch(`/api${path}`, {
+  const send = () => fetch(`/api${path}`, {
     ...init,
     headers,
     credentials: 'include',
   });
+  let response = await send();
+  let payload = response.status === 204 ? undefined : await response.json().catch(() => ({}));
+  const csrfRejected = response.status === 403
+    && typeof payload?.detail === 'string'
+    && payload.detail.includes('CSRF Failed');
+  if (unsafeMethod && csrfRejected) {
+    csrfToken = '';
+    await api.csrf();
+    headers.set('X-CSRFToken', csrfToken);
+    response = await send();
+    payload = response.status === 204 ? undefined : await response.json().catch(() => ({}));
+  }
   if (response.status === 204) return undefined as T;
-  const payload = await response.json().catch(() => ({}));
   if (!response.ok && !expectedStatuses.includes(response.status)) {
     const validationError = Array.isArray(payload.non_field_errors)
       ? payload.non_field_errors[0]
@@ -165,6 +261,10 @@ export const api = {
   },
   logout: () => request<void>('/auth/logout/', { method: 'POST' }),
   dashboard: () => request<DashboardData>('/admin/dashboard/'),
+  staffActivity: () => request<StaffActivityData>('/admin/staff-activity/'),
+  deskHistory: (page: number, deskId?: number) => request<DeskHistoryData>(
+    `/admin/desk-history/?page=${page}&page_size=25${deskId ? `&desk_id=${deskId}` : ''}`,
+  ),
   tickets: (query: string) =>
     request<{ count: number; results: TicketRecord[] }>(
       `/admin/tickets/?page_size=50${query ? `&q=${encodeURIComponent(query)}` : ''}`,
@@ -187,6 +287,7 @@ export const api = {
   createOnSpotRegistration: (payload: {
     event_id: string;
     attendee_name: string;
+    attendee_names: string[];
     attendee_email: string;
     attendee_phone: string;
     ticket_type: 'Single ticket' | 'Combo 5+1';
@@ -221,7 +322,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ credential }),
     }, [409]),
-  validateScan: (credential: string) =>
+  validateScan: (credential: string, method: 'QR' | 'MANUAL' = 'QR') =>
     request<{
       result: string;
       ticket_id?: string | null;
@@ -231,9 +332,9 @@ export const api = {
       checked_in_at?: string | null;
     }>('/scanner/validate/', {
       method: 'POST',
-      body: JSON.stringify({ credential }),
+      body: JSON.stringify({ credential, method }),
     }),
-  checkInScan: (credential: string) =>
+  checkInScan: (credential: string, method: 'QR' | 'MANUAL' = 'QR') =>
     request<{
       result: string;
       ticket_number?: string;
@@ -242,7 +343,7 @@ export const api = {
       checked_in_at?: string | null;
     }>('/scanner/check-in/', {
       method: 'POST',
-      body: JSON.stringify({ credential }),
+      body: JSON.stringify({ credential, method }),
     }, [409]),
   scanHistory: () => request<Array<Record<string, string>>>('/scanner/history/'),
   sendTicketEmail: (ticketId: string) =>
